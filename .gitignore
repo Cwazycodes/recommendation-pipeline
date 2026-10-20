@@ -218,3 +218,28 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+.aws/
+
+# Python virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Private keys and certificates
+*.pem
+
+# Terraform state and local files
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Local IDE and OS files
+.vscode/
+.DS_Store
