@@ -1,0 +1,36 @@
+
+repos:
+  # Standard file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: check-yaml
+
+  # Use the versions installed by Poetry
+  - repo: local
+    hooks:
+      - id: ruff
+        name: Ruff lint
+        entry: poetry run ruff check --fix
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: Ruff format
+        entry: poetry run ruff format
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy typecheck
+        entry: poetry run mypy src
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Secret scanning
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.2
+    hooks:
+      - id: gitleaks

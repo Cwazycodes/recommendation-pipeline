@@ -73,4 +73,3 @@ The implementation will measure:
 - Result freshness and successful DynamoDB writes.
 
 Correctness takes priority over throughput. The project is successful when automated tests validate aggregation, window boundaries, ranking, duplicate handling, and recovery, and a repeatable benchmark documents the achieved performance.
-
