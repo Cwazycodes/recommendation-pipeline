@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "ViewingEventType": {
+      "enum": [
+        "play_start",
+        "heartbeat",
+        "pause",
+        "play_end"
+      ],
+      "title": "ViewingEventType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Validated event describing synthetic programme viewing activity.",
+  "properties": {
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "user_id": {
+      "minLength": 1,
+      "title": "User Id",
+      "type": "string"
+    },
+    "programme_id": {
+      "minLength": 1,
+      "title": "Programme Id",
+      "type": "string"
+    },
+    "event_type": {
+      "$ref": "#/$defs/ViewingEventType"
+    },
+    "position_s": {
+      "minimum": 0,
+      "title": "Position S",
+      "type": "number"
+    },
+    "duration_s": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Duration S"
+    },
+    "device": {
+      "minLength": 1,
+      "title": "Device",
+      "type": "string"
+    },
+    "event_time": {
+      "minimum": 0,
+      "title": "Event Time",
+      "type": "integer"
+    },
+    "produced_at": {
+      "minimum": 0,
+      "title": "Produced At",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "event_id",
+    "user_id",
+    "programme_id",
+    "event_type",
+    "position_s",
+    "duration_s",
+    "device",
+    "event_time",
+    "produced_at"
+  ],
+  "title": "ViewingEvent",
+  "type": "object"
+}
