@@ -32,9 +32,9 @@ lint:
 typecheck:
 	poetry run mypy src
 
-## Run automated tests with pytest and coverage.
+## Run automated tests and generate terminal and XML coverage reports.
 test:
-	poetry run pytest --cov=realtime_recommendation_pipeline --cov-report=term-missing
+	poetry run pytest --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
 
 ## Run linting, type checking, and tests.
 check: lint typecheck test
