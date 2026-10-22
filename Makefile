@@ -4,7 +4,7 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install fmt lint typecheck test check
+.PHONY: help install fmt lint typecheck test check hooks
 
 ## Show all available targets and their descriptions.
 help:
@@ -38,3 +38,7 @@ test:
 
 ## Run linting, type checking, and tests.
 check: lint typecheck test
+
+## Install Git pre-commit hooks.
+hooks:
+	poetry run pre-commit install
