@@ -4,7 +4,7 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install fmt lint typecheck test check hooks
+.PHONY: help install fmt lint typecheck test check hooks generate
 
 ## Show all available targets and their descriptions.
 help:
@@ -42,3 +42,7 @@ check: lint typecheck test
 ## Install Git pre-commit hooks.
 hooks:
 	poetry run pre-commit install
+
+## Generate synthetic viewing events.
+generate:
+	poetry run python -m realtime_recommendation_pipeline.producer.generate
