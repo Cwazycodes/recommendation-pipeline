@@ -18,6 +18,10 @@ from pyflink.datastream.connectors.kafka import (
     KafkaSource,
 )
 
+from realtime_recommendation_pipeline.flink_jobs.dedup import (
+    DeduplicateEvents,
+    event_id_of,
+)
 from realtime_recommendation_pipeline.flink_jobs.validation import validate_event
 
 BOOTSTRAP_SERVERS = "kafka:29092"
@@ -93,7 +97,13 @@ def main() -> None:
     dead_letters = valid_events.get_side_output(DLQ_TAG)
     dead_letters.sink_to(build_dlq_sink()).name("viewing-events-dlq-sink")
 
-    valid_events.print()
+    unique_events = (
+        valid_events.key_by(event_id_of, key_type=Types.STRING())
+        .process(DeduplicateEvents(), output_type=Types.STRING())
+        .name("deduplicate-events")
+    )
+
+    unique_events.print()
 
     env.execute("validate-viewing-events")
 

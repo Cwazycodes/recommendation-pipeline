@@ -49,3 +49,12 @@ def test_malformed_rate_injects_malformed_events() -> None:
 
     assert len(events) == 1_000
     assert 50 <= len(malformed) <= 150
+
+
+def test_dup_rate_repeats_event_ids() -> None:
+    events = produce_with_fake(dup_rate=0.1)
+
+    event_ids = [event["event_id"] for event in events]
+
+    assert len(set(event_ids)) == 1_000
+    assert len(event_ids) > 1_000

@@ -61,6 +61,18 @@ Flink checkpoints and Kafka replay provide the intended recovery mechanism. Dyna
 
 Lambda exposes a read endpoint that returns the latest available trending results. The API returns a clear response when results are unavailable and does not perform the streaming aggregation itself.
 
+### Deduplication
+
+`DeduplicateEvents` keys the validated stream by `event_id` and keeps a `seen` flag per key in Flink `ValueState`. The first copy of an event is forwarded; later copies are dropped and counted in the `duplicate_events` metric.
+
+**State TTL: 1 hour, processing time, counted from the first sighting** (`OnCreateAndWrite`, expired flags never returned).
+
+- **Why not shorter:** duplicates come from client resends and producer retries (seconds) and from Kafka redelivery after a consumer restart or rebalance (seconds to minutes). One hour covers both with a wide margin.
+- **Why not longer:** state grows with unique events per second multiplied by the TTL. At the 500 events/s test rate one hour is about 1.8 million keys (500 × 3,600), and every extra hour adds the same again. The heap state backend keeps all of it in TaskManager memory.
+- **What it does not catch:** a copy that arrives more than an hour after the first one is counted again, for example a backlog replayed after an outage longer than the TTL. TTL uses processing time, so it measures time since Flink saw the event, not the event's `event_time`.
+- **Interaction with checkpoints:** on failure, Flink restores the `seen` state and the Kafka offsets from the same checkpoint, so replayed events are judged against consistent state. Events emitted after that checkpoint are emitted again, so sinks still see at-least-once output, which is why result writes must be idempotent.
+- **If the trade-off changes:** a longer TTL on the RocksDB state backend moves state to disk, and once watermarks exist (RP-14) event-time timers could expire state by `event_time` instead of wall-clock time.
+
 ## 6. Performance and acceptance criteria
 
 The initial performance target is **p95 event-to-result latency of 30 seconds or less under a documented local test workload**, measured from event ingestion to the corresponding updated result becoming available. This is a provisional engineering target, not a production service-level agreement.
