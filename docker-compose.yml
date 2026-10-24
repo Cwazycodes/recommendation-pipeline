@@ -48,6 +48,40 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+  flink-jobmanager:
+    build:
+      context: .
+      dockerfile: Dockerfile.flink
+    image: recommendation-pipeline/flink:1.20.1
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        parallelism.default: 1
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        state.checkpoint-storage: filesystem
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - ./jobs:/opt/flink/jobs:ro
+    depends_on:
+      - kafka
+
+  flink-taskmanager:
+    image: recommendation-pipeline/flink:1.20.1
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - ./jobs:/opt/flink/jobs:ro
+    depends_on:
+      - flink-jobmanager
+      - kafka
 
 volumes:
   kafka_data:
+  flink-checkpoints:

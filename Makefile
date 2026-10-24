@@ -79,3 +79,8 @@ produce:
 ## Run Kafka integration tests.
 test-int:
 	poetry run pytest -m integration
+
+## Run a smoke job that reads viewing-events and prints a running count.
+submit-job:
+	@if [ -z "$(JOB)" ]; then echo "Usage: make submit-job JOB=smoke"; exit 1; fi
+	docker compose exec flink-jobmanager flink run -py /opt/flink/jobs/$(JOB).py
