@@ -65,6 +65,7 @@ services:
     volumes:
       - flink-checkpoints:/opt/flink/checkpoints
       - ./jobs:/opt/flink/jobs:ro
+      - ./src:/opt/flink/src:ro
     depends_on:
       - kafka
 
@@ -77,6 +78,7 @@ services:
         taskmanager.numberOfTaskSlots: 2
     volumes:
       - flink-checkpoints:/opt/flink/checkpoints
+      - ./src:/opt/flink/src:ro
       - ./jobs:/opt/flink/jobs:ro
     depends_on:
       - flink-jobmanager

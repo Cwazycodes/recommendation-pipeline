@@ -1,4 +1,4 @@
-from enum import StrEnum
+from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -9,7 +9,7 @@ TimestampMs = Annotated[int, Field(ge=0)]
 Seconds = Annotated[float, Field(ge=0)]
 
 
-class ViewingEventType(StrEnum):
+class ViewingEventType(Enum):
     PLAY_START = "play_start"
     HEARTBEAT = "heartbeat"
     PAUSE = "pause"
