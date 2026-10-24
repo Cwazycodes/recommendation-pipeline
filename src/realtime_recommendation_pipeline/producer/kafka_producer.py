@@ -53,6 +53,7 @@ def produce_events(
     seed: int = 42,
     producer_factory: Callable[..., Producer] = Producer,
     malformed_rate: float = 0.0,
+    dup_rate: float = 0.0,
 ) -> dict[str, int]:
     """Generate and publish events at the requested rate."""
     if rate <= 0:
@@ -75,7 +76,9 @@ def produce_events(
     stats = {"delivered": 0, "failures": 0}
 
     event_count = int(rate * duration)
-    events = generate_events(event_count, seed=seed, malformed_rate=malformed_rate)
+    events = generate_events(
+        event_count, seed=seed, dup_rate=dup_rate, malformed_rate=malformed_rate
+    )
 
     start_time = time.monotonic()
     next_event_time = start_time
@@ -164,6 +167,7 @@ def main() -> None:
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--malformed-rate", type=float, default=0.0)
+    parser.add_argument("--dup-rate", type=float, default=0.0)
 
     args = parser.parse_args()
 
@@ -181,6 +185,7 @@ def main() -> None:
         duration=args.duration,
         seed=args.seed,
         malformed_rate=args.malformed_rate,
+        dup_rate=args.dup_rate,
     )
 
 

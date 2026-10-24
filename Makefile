@@ -8,6 +8,7 @@ RATE ?= 500
 DURATION ?= 60
 
 MALFORMED_RATE ?= 0.0
+DUP_RATE ?= 0.0
 
 .PHONY: help install fmt lint typecheck test check hooks generate up down topics logs produce test-int
 
@@ -23,7 +24,7 @@ help:
 
 ## Install project and default development dependencies.
 install:
-	poetry install
+	poetry install --with flink
 
 ## Format Python code with Ruff.
 fmt:
@@ -76,8 +77,9 @@ logs:
 produce:
 	poetry run python -m realtime_recommendation_pipeline.producer.kafka_producer \
 		--rate $(RATE) \
-		--duration $(DURATION)\
-		--malformed-rate $(MALFORMED_RATE)
+		--duration $(DURATION) \
+		--malformed-rate $(MALFORMED_RATE) \
+		--dup-rate $(DUP_RATE)
 
 ## Run Kafka integration tests.
 test-int:
