@@ -7,7 +7,7 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
-dependencies = ["pydantic (>=2.0,<3.0)"]
+dependencies = ["pydantic (>=2.0,<3.0)", "confluent-kafka (>=2.16.0,<3.0.0)"]
 
 [dependency-groups]
 dev = [
@@ -15,7 +15,8 @@ dev = [
     "pytest-cov (>=7.1.0,<8.0.0)",
     "ruff (>=0.17.2,<0.18.0)",
     "mypy (>=2.4.0,<3.0.0)",
-    "pre-commit (>=4.7.0,<5.0.0)"
+    "pre-commit (>=4.7.0,<5.0.0)",
+    "testcontainers (>=4.10,<5)"
 ]
 flink = [
     "apache-flink (==2.3.0)"
@@ -32,3 +33,8 @@ optional = true
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests requiring a running Docker environment",
+]
