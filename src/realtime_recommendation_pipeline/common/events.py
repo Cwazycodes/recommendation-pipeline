@@ -9,7 +9,7 @@ TimestampMs = Annotated[int, Field(ge=0)]
 Seconds = Annotated[float, Field(ge=0)]
 
 
-class ViewingEventType(Enum):
+class ViewingEventType(str, Enum):
     PLAY_START = "play_start"
     HEARTBEAT = "heartbeat"
     PAUSE = "pause"
