@@ -4,7 +4,10 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install fmt lint typecheck test check hooks generate up down topics logs
+RATE ?= 500
+DURATION ?= 60
+
+.PHONY: help install fmt lint typecheck test check hooks generate up down topics logs produce test-int
 
 ## Show all available targets and their descriptions.
 help:
@@ -34,7 +37,7 @@ typecheck:
 
 ## Run automated tests and generate terminal and XML coverage reports.
 test:
-	poetry run pytest --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
+	poetry run pytest -m "not integration" --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
 
 ## Run linting, type checking, and tests.
 check: lint typecheck test
@@ -66,3 +69,13 @@ topics:
 ## Follow logs from the Kafka containers.
 logs:
 	docker compose logs -f kafka kafka-ui
+
+## Produce synthetic events to local Kafka.
+produce:
+	poetry run python -m realtime_recommendation_pipeline.producer.kafka_producer \
+		--rate $(RATE) \
+		--duration $(DURATION)
+
+## Run Kafka integration tests.
+test-int:
+	poetry run pytest -m integration

@@ -1,4 +1,3 @@
-
 name: CI
 
 on:
@@ -46,3 +45,29 @@ jobs:
           name: pytest-coverage
           path: coverage.xml
           if-no-files-found: warn
+
+  integration:
+    name: Kafka integration tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.5.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install integration dependencies
+        run: poetry install --with flink
+
+      - name: Run Kafka integration tests
+        run: make test-int
