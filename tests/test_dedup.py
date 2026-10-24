@@ -1,12 +1,12 @@
 import json
 
 from pyflink.datastream.state import StateTtlConfig
+
 from realtime_recommendation_pipeline.flink_jobs.dedup import (
     DeduplicateEvents,
     event_id_of,
     seen_ttl_config,
 )
-
 from realtime_recommendation_pipeline.producer.generate import generate_events
 
 
