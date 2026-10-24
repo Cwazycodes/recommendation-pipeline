@@ -7,6 +7,8 @@ SHELL := bash
 RATE ?= 500
 DURATION ?= 60
 
+MALFORMED_RATE ?= 0.0
+
 .PHONY: help install fmt lint typecheck test check hooks generate up down topics logs produce test-int
 
 ## Show all available targets and their descriptions.
@@ -74,13 +76,16 @@ logs:
 produce:
 	poetry run python -m realtime_recommendation_pipeline.producer.kafka_producer \
 		--rate $(RATE) \
-		--duration $(DURATION)
+		--duration $(DURATION)\
+		--malformed-rate $(MALFORMED_RATE)
 
 ## Run Kafka integration tests.
 test-int:
 	poetry run pytest -m integration
 
-## Run a smoke job that reads viewing-events and prints a running count.
+## Submit a PyFlink job from jobs/ (e.g. make submit-job JOB=validate_events).
 submit-job:
 	@if [ -z "$(JOB)" ]; then echo "Usage: make submit-job JOB=smoke"; exit 1; fi
-	docker compose exec flink-jobmanager flink run -py /opt/flink/jobs/$(JOB).py
+	docker compose exec flink-jobmanager flink run -d \
+		-py /opt/flink/jobs/$(JOB).py \
+		-pyfs /opt/flink/src
