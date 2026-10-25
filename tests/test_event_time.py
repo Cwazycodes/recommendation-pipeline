@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from pyflink.common import Types
 from pyflink.common.watermark_strategy import TimestampAssigner
 from pyflink.datastream import StreamExecutionEnvironment
@@ -11,6 +12,8 @@ from realtime_recommendation_pipeline.flink_jobs.event_time import (
     viewing_event_watermarks,
 )
 
+# Every test here starts a local Flink mini-cluster.
+pytestmark = pytest.mark.slow
 T0 = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
 
 

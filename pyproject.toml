@@ -42,4 +42,5 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 markers = [
     "integration: tests requiring a running Docker environment",
+    "slow: tests that run a local Flink mini-cluster (need Java)",
 ]

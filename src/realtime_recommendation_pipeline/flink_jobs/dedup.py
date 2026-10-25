@@ -8,7 +8,7 @@ from typing import Any
 
 from pyflink.common import Types
 from pyflink.common.time import Time
-from pyflink.datastream import KeyedProcessFunction, RuntimeContext
+from pyflink.datastream import DataStream, KeyedProcessFunction, RuntimeContext
 from pyflink.datastream.state import StateTtlConfig, ValueStateDescriptor
 
 # Long enough to cover redelivery, short enough to bound state.
@@ -51,3 +51,12 @@ class DeduplicateEvents(KeyedProcessFunction):
         self.seen.update(True)
         self.unique_events.inc()
         yield value
+
+
+def deduplicate(events: DataStream) -> DataStream:
+    """Key validated events by event_id and drop repeat copies."""
+    return (
+        events.key_by(event_id_of, key_type=Types.STRING())
+        .process(DeduplicateEvents(), output_type=Types.STRING())
+        .name("deduplicate-events")
+    )

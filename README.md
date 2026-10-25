@@ -1,4 +1,4 @@
-[![CI](https://github.com/Cwazycodes/recommendation-pipelineactions/workflows/ci.yml/badge.svg)](https://github.com/YOUR-USERNAME/YOUR-REPO/actions/workflows/ci.yml)
+[![CI](https://github.com/Cwazycodes/recommendation-pipelineactions/workflows/ci.yml/badge.svg)](https://github.com/Cwazycodes/recommendation-pipelineactions/actions/workflows/ci.yml)
 # recommendation-pipeline
 
 # Real-Time Recommendation Pipeline
