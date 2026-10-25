@@ -45,6 +45,25 @@ def _delivery_callback(
     stats["delivered"] += 1
 
 
+def kafka_timestamp_ms(event: dict[str, object]) -> int:
+    """Kafka record timestamp for an event: its event_time.
+
+    Flink's Kafka source uses record timestamps as event time, so stamping
+    records with event_time makes windows follow when people watched.
+    Malformed events fall back to produced_at, which sits right next to the
+    original event_time, so they cannot push a partition's watermark ahead.
+    """
+    event_time = event["event_time"]
+    if isinstance(event_time, int):
+        return event_time
+
+    produced_at = event["produced_at"]
+    if isinstance(produced_at, int):
+        return produced_at
+
+    raise ValueError("event has neither an integer event_time nor produced_at")
+
+
 def produce_events(
     *,
     bootstrap_servers: str,
@@ -100,12 +119,14 @@ def produce_events(
                 break
 
             user_id = str(event["user_id"])
+            timestamp = kafka_timestamp_ms(event)
 
             try:
                 producer.produce(
                     topic="viewing-events",
                     key=user_id.encode("utf-8"),
                     value=json.dumps(event).encode("utf-8"),
+                    timestamp=timestamp,
                     callback=lambda error, message: _delivery_callback(
                         error,
                         message,
@@ -121,6 +142,7 @@ def produce_events(
                     topic="viewing-events",
                     key=user_id.encode("utf-8"),
                     value=json.dumps(event).encode("utf-8"),
+                    timestamp=timestamp,
                     callback=lambda error, message: _delivery_callback(
                         error,
                         message,

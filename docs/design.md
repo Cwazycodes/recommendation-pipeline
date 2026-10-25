@@ -53,6 +53,21 @@ Ranking is based on descending event count, with `programme_id` as a determinist
 
 Events arriving late are handled according to a configurable event-time watermark and allowed-lateness policy. Events arriving beyond the accepted lateness threshold are recorded or measured rather than silently changing historical results.
 
+
+### Event time and lateness
+
+Windows use `event_time`, the moment the viewer's action happened, not the time a record reached Kafka or Flink.
+
+- **Where event time comes from:** the producer copies `event_time` into the Kafka record timestamp, and the Flink Kafka source uses that timestamp for each record. After validation and deduplication the stream becomes a Table whose `event_time` column (`TIMESTAMP_LTZ(3)`) is the rowtime attribute, carrying the same watermarks.
+- **Why the Kafka timestamp:** PyFlink ignores a Python `TimestampAssigner` passed to `from_source`, so the record timestamp is the only way to get watermarks generated per partition. Per-partition watermarks matter here: the generator compresses roughly 1,350 hours of event time into a 60-second run, so merging partitions before assigning watermarks would turn millisecond-level interleaving into minutes of apparent disorder.
+- **Watermark:** for each partition, the newest `event_time` seen minus 30 seconds. The source's watermark is the minimum across active partitions.
+- **Idleness:** a partition that delivers nothing for 60 seconds is marked idle and stops holding the watermark back. When it delivers again it rejoins.
+- **What counts as late:** an event whose `event_time` is at or before the current watermark, meaning more than 30 seconds behind the newest event in its partition, or behind the others after its partition was idle.
+- **What happens beyond the bound:** a late event still passes validation and deduplication. In a window aggregation it is counted if its window has not fired yet; if the window has already fired, the window operator drops it and counts it in its `numLateRecordsDropped` metric. Published results are never revised (no allowed lateness), which keeps historical results stable.
+- **Malformed events:** when `event_time` is not an integer the producer stamps the record with `produced_at`, so a bad event cannot push a partition's watermark ahead. It is dead-lettered as before.
+- **Known risk:** a well-formed but far-future `event_time` would advance its partition's watermark and make the events that follow late. Validation does not check plausibility yet.
+- **Retention:** the event topics use `retention.ms=-1` locally, because Kafka's time-based retention reads record timestamps and synthetic event times can be weeks old.
+
 ## 5. Reliability and serving
 
 Each event is deduplicated using `event_id` within a documented retention period. The pipeline must tolerate repeated delivery without inflating popularity counts. The design will document how deduplication state, checkpoints, and recovery interact.
