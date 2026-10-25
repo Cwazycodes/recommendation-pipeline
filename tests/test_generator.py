@@ -1,6 +1,7 @@
 import json
 
 from realtime_recommendation_pipeline.producer.generate import (
+    BASE_TIME_MS,
     generate_events,
     generate_valid_events,
 )
@@ -90,3 +91,23 @@ def test_late_events_are_emitted_out_of_order() -> None:
 
     assert sorted(normal_times) == sorted(late_times)
     assert normal_times != late_times
+
+
+def test_valid_events_are_in_event_time_order() -> None:
+    events = generate_valid_events(1_000, seed=42)
+
+    event_times = [event["event_time"] for event in events]
+
+    assert event_times == sorted(event_times)
+
+
+def test_sessions_overlap_so_each_hour_has_many_viewers() -> None:
+    events = generate_valid_events(5_000, seed=42)
+
+    first_hour_viewers = {
+        event["user_id"]
+        for event in events
+        if event["event_time"] < BASE_TIME_MS + 3_600_000
+    }
+
+    assert len(first_hour_viewers) >= 30
