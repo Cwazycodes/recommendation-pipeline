@@ -27,11 +27,17 @@ from realtime_recommendation_pipeline.flink_jobs.event_time import (
     to_events_table,
     viewing_event_watermarks,
 )
+from realtime_recommendation_pipeline.flink_jobs.trending import (
+    parse_trending_config,
+    to_trending_json,
+    trending_table,
+)
 from realtime_recommendation_pipeline.flink_jobs.validation import validate_event
 
 BOOTSTRAP_SERVERS = "kafka:29092"
 SOURCE_TOPIC = "viewing-events"
 DLQ_TOPIC = "viewing-events-dlq"
+TRENDING_TOPIC = "trending-results"
 
 # One shared tag: the function emits to it and get_side_output() reads it.
 DLQ_TAG = OutputTag("dead-letters", Types.STRING())
@@ -58,13 +64,13 @@ class ValidateEvents(ProcessFunction):
         yield DLQ_TAG, json.dumps(result.dead_letter)
 
 
-def build_dlq_sink() -> KafkaSink:
+def build_kafka_sink(topic: str) -> KafkaSink:
     return (
         KafkaSink.builder()
         .set_bootstrap_servers(BOOTSTRAP_SERVERS)
         .set_record_serializer(
             KafkaRecordSerializationSchema.builder()
-            .set_topic(DLQ_TOPIC)
+            .set_topic(topic)
             .set_value_serialization_schema(SimpleStringSchema())
             .build()
         )
@@ -74,6 +80,7 @@ def build_dlq_sink() -> KafkaSink:
 
 
 def main() -> None:
+    config = parse_trending_config()
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)
     env.enable_checkpointing(10_000)
@@ -104,7 +111,7 @@ def main() -> None:
     ).name("validate-events")
 
     dead_letters = valid_events.get_side_output(DLQ_TAG)
-    dead_letters.sink_to(build_dlq_sink()).name("viewing-events-dlq-sink")
+    dead_letters.sink_to(build_kafka_sink(DLQ_TOPIC)).name("viewing-events-dlq-sink")
 
     unique_events = (
         valid_events.key_by(event_id_of, key_type=Types.STRING())
@@ -118,7 +125,15 @@ def main() -> None:
     events_table = to_events_table(t_env, unique_events)
     events_table.print_schema()
 
-    t_env.to_data_stream(events_table).print()
+    trending = trending_table(t_env, events_table, config)
+
+    (
+        t_env.to_data_stream(trending)
+        .map(to_trending_json, output_type=Types.STRING())
+        .name("to-trending-json")
+        .sink_to(build_kafka_sink(TRENDING_TOPIC))
+        .name("trending-results-sink")
+    )
 
     env.execute("validate-viewing-events")
 

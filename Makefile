@@ -9,6 +9,7 @@ DURATION ?= 60
 
 MALFORMED_RATE ?= 0.0
 DUP_RATE ?= 0.0
+JOB_ARGS ?=
 
 .PHONY: help install fmt lint typecheck test check hooks generate up down topics logs produce test-int
 
@@ -90,4 +91,5 @@ submit-job:
 	@if [ -z "$(JOB)" ]; then echo "Usage: make submit-job JOB=smoke"; exit 1; fi
 	docker compose exec flink-jobmanager flink run -d \
 		-py /opt/flink/jobs/$(JOB).py \
-		-pyfs /opt/flink/src
+		-pyfs /opt/flink/src \
+		$(JOB_ARGS)

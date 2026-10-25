@@ -18,6 +18,11 @@ NAMESPACE = UUID("d3a7e6d0-46ad-4d92-9b39-0e1e5f29c2e1")
 BASE_TIME_MS = 1_790_000_000_000
 HEARTBEAT_INTERVAL_S = 30
 
+# One new session a minute. Sessions last up to two hours, so dozens of
+# viewers overlap at any moment, which is what trending windows need.
+SESSION_START_INTERVAL_MS = 60_000
+
+
 PROGRAMME_COUNT = 500
 USER_COUNT = 1_000
 
@@ -110,9 +115,18 @@ def generate_valid_events(
     weights = zipf_weights(len(catalogue))
     sequence = 0
     session_number = 0
-    events: list[dict[str, object]] = []
+    timed_events: list[tuple[int, dict[str, object]]] = []
 
-    while len(events) < count:
+    while True:
+        session_start_ms = BASE_TIME_MS + session_number * SESSION_START_INTERVAL_MS
+
+        # Later sessions only add events after their start, so once `count`
+        # events happen before this start, the earliest `count` are final.
+        if len(timed_events) >= count:
+            settled = sum(1 for t, _ in timed_events if t < session_start_ms)
+            if settled >= count:
+                break
+
         user_id = rng.choice(users)
 
         programme = rng.choices(
@@ -126,9 +140,6 @@ def generate_valid_events(
         duration_s = float(rng.randint(600, 7_200))
         watched_s = rng.randint(30, int(duration_s))
         device = rng.choice(["smart_tv", "mobile", "tablet", "web"])
-
-        # Space sessions apart to create realistic event times.
-        session_start_ms = BASE_TIME_MS + session_number * 10_800_000
 
         def append_event(
             event_type: ViewingEventType,
@@ -158,7 +169,7 @@ def generate_valid_events(
             )
 
             event["device"] = device
-            events.append(event)
+            timed_events.append((event_time, event))
             sequence += 1
 
         append_event(ViewingEventType.PLAY_START, 0)
@@ -176,7 +187,10 @@ def generate_valid_events(
         # Increment once after the complete session.
         session_number += 1
 
-    return events[:count]
+    # Emit in event-time order, the way live viewing would arrive.
+    timed_events.sort(key=lambda pair: pair[0])
+
+    return [event for _, event in timed_events[:count]]
 
 
 def inject_faults(

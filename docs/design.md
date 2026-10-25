@@ -47,9 +47,9 @@ All events use invented catalogue entries and generated user identifiers. The in
 
 Flink calculates programme popularity using **one-hour sliding event-time windows, evaluated every five minutes**.
 
-For each window, the pipeline counts eligible, unique viewing events per programme and selects the top 20 programmes. Results include the programme identifier, event count, window start and end timestamps, and calculation timestamp.
+For each window, the pipeline scores each programme by its number of distinct viewers and selects the top 20 programmes. Results include the programme identifier, score, window start and end timestamps, and calculation timestamp.
 
-Ranking is based on descending event count, with `programme_id` as a deterministic tie-breaker. The initial implementation uses synthetic events and a clearly documented eligibility rule.
+Ranking is based on descending score, with `programme_id` as a deterministic tie-breaker. The initial implementation uses synthetic events and a clearly documented eligibility rule.
 
 Events arriving late are handled according to a configurable event-time watermark and allowed-lateness policy. Events arriving beyond the accepted lateness threshold are recorded or measured rather than silently changing historical results.
 
@@ -59,7 +59,7 @@ Events arriving late are handled according to a configurable event-time watermar
 Windows use `event_time`, the moment the viewer's action happened, not the time a record reached Kafka or Flink.
 
 - **Where event time comes from:** the producer copies `event_time` into the Kafka record timestamp, and the Flink Kafka source uses that timestamp for each record. After validation and deduplication the stream becomes a Table whose `event_time` column (`TIMESTAMP_LTZ(3)`) is the rowtime attribute, carrying the same watermarks.
-- **Why the Kafka timestamp:** PyFlink ignores a Python `TimestampAssigner` passed to `from_source`, so the record timestamp is the only way to get watermarks generated per partition. Per-partition watermarks matter here: the generator compresses roughly 1,350 hours of event time into a 60-second run, so merging partitions before assigning watermarks would turn millisecond-level interleaving into minutes of apparent disorder.
+- **Why the Kafka timestamp:** PyFlink ignores a Python `TimestampAssigner` passed to `from_source`, so the record timestamp is the only way to get watermarks generated per partition. Per-partition watermarks matter here: the generator compresses roughly 8 hours of event time into a 60-second run, so merging partitions before assigning watermarks would turn millisecond-level interleaving into minutes of apparent disorder.
 - **Watermark:** for each partition, the newest `event_time` seen minus 30 seconds. The source's watermark is the minimum across active partitions.
 - **Idleness:** a partition that delivers nothing for 60 seconds is marked idle and stops holding the watermark back. When it delivers again it rejoins.
 - **What counts as late:** an event whose `event_time` is at or before the current watermark, meaning more than 30 seconds behind the newest event in its partition, or behind the others after its partition was idle.
@@ -67,6 +67,24 @@ Windows use `event_time`, the moment the viewer's action happened, not the time 
 - **Malformed events:** when `event_time` is not an integer the producer stamps the record with `produced_at`, so a bad event cannot push a partition's watermark ahead. It is dead-lettered as before.
 - **Known risk:** a well-formed but far-future `event_time` would advance its partition's watermark and make the events that follow late. Validation does not check plausibility yet.
 - **Retention:** the event topics use `retention.ms=-1` locally, because Kafka's time-based retention reads record timestamps and synthetic event times can be weeks old.
+
+### Trending results
+
+- **Eligibility and score:** only `play_start` and `heartbeat` events count, since they mean someone is watching. A programme's score is `COUNT(DISTINCT user_id)` in the window, so one viewer sending many heartbeats still counts once.
+- **Windows:** Flink SQL `HOP` windows, 60 minutes long, sliding every 5 minutes. Both are job arguments (`--window-size-minutes`, `--window-slide-minutes`, `--top-n`); the size must be a whole multiple of the slide.
+- **Ranking:** Window Top-N with `ROW_NUMBER() OVER (PARTITION BY window_start, window_end ORDER BY score DESC, programme_id)`, keeping ranks 1 to 20. Each window emits its list once, when the watermark passes `window_end`.
+- **Output:** one JSON message per ranked programme on `trending-results`:
+
+  | Field | Meaning |
+  |---|---|
+  | `window_start`, `window_end` | Window bounds, ISO 8601 UTC (`2026-09-21T12:00:00Z`) |
+  | `rank` | 1 = most distinct viewers |
+  | `programme_id` | Ranked programme |
+  | `score` | Distinct viewers in the window |
+  | `max_produced_at` | Latest `produced_at` among the programme's events in the window (epoch ms) |
+  | `emitted_at` | When Flink emitted the row (epoch ms) |
+
+- **Quiet windows:** a window with no eligible events emits nothing, and the last windows of a run wait until the watermark passes their end.
 
 ## 5. Reliability and serving
 
