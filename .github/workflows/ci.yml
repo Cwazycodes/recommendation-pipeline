@@ -32,6 +32,12 @@ jobs:
           cache: poetry
           cache-dependency-path: poetry.lock
 
+      - name: Set up Java for PyFlink tests
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Install dependencies
         run: make install
 

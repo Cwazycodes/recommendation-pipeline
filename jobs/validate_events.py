@@ -2,7 +2,7 @@
 
 import json
 
-from pyflink.common import Types, WatermarkStrategy
+from pyflink.common import Types
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.datastream import (
     OutputTag,
@@ -17,10 +17,15 @@ from pyflink.datastream.connectors.kafka import (
     KafkaSink,
     KafkaSource,
 )
+from pyflink.table import StreamTableEnvironment
 
 from realtime_recommendation_pipeline.flink_jobs.dedup import (
     DeduplicateEvents,
     event_id_of,
+)
+from realtime_recommendation_pipeline.flink_jobs.event_time import (
+    to_events_table,
+    viewing_event_watermarks,
 )
 from realtime_recommendation_pipeline.flink_jobs.validation import validate_event
 
@@ -83,9 +88,13 @@ def main() -> None:
         .build()
     )
 
+    # Watermarks are generated per Kafka partition from the record timestamp,
+    # which the producer sets to event_time. PyFlink ignores a Python
+    # TimestampAssigner passed to from_source, so the Kafka timestamp is the
+    # way to get per-partition event-time watermarks.
     raw_events = env.from_source(
         source,
-        WatermarkStrategy.no_watermarks(),
+        viewing_event_watermarks(),
         "viewing-events-source",
     )
 
@@ -103,7 +112,13 @@ def main() -> None:
         .name("deduplicate-events")
     )
 
-    unique_events.print()
+    t_env = StreamTableEnvironment.create(env)
+    t_env.get_config().set_local_timezone("UTC")
+
+    events_table = to_events_table(t_env, unique_events)
+    events_table.print_schema()
+
+    t_env.to_data_stream(events_table).print()
 
     env.execute("validate-viewing-events")
 
