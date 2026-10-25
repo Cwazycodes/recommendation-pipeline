@@ -106,6 +106,14 @@ Lambda exposes a read endpoint that returns the latest available trending result
 - **Interaction with checkpoints:** on failure, Flink restores the `seen` state and the Kafka offsets from the same checkpoint, so replayed events are judged against consistent state. Events emitted after that checkpoint are emitted again, so sinks still see at-least-once output, which is why result writes must be idempotent.
 - **If the trade-off changes:** a longer TTL on the RocksDB state backend moves state to disk, and once watermarks exist (RP-14) event-time timers could expire state by `event_time` instead of wall-clock time.
 
+### Testing against an oracle
+
+`trending_oracle.py` is a plain-Python reference implementation of trending. It imports nothing from the Flink job and models the job's rules directly: drop repeat `event_id`s (first copy wins), keep a watermark of the newest `event_time` minus 30 seconds, fire a window once the watermark reaches `window_end` minus 1 ms, and count an event only in windows that have not fired when it arrives.
+
+The slow tests run the job's own deduplication, rowtime table and trending SQL on an in-memory source in local PyFlink, with no Kafka, and require the output to equal the oracle's on every fixture: ties, late events, duplicates, empty windows, and a generated stream with duplicates and late events. One deliberate difference from production: the tests define the watermark in SQL and emit it after every record, because a bounded source finishes before Flink's periodic watermark fires and no event would ever be late.
+
+`make test` skips these; `make test-flink` runs them, and CI runs them as their own job with Java installed.
+
 ## 6. Performance and acceptance criteria
 
 The initial performance target is **p95 event-to-result latency of 30 seconds or less under a documented local test workload**, measured from event ingestion to the corresponding updated result becoming available. This is a provisional engineering target, not a production service-level agreement.

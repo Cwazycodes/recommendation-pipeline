@@ -122,6 +122,7 @@ def test_trending_json_has_the_ticket_fields() -> None:
     assert abs(message["emitted_at"] - time.time_ns() // 1_000_000) < 5_000
 
 
+@pytest.mark.slow
 def test_ranks_distinct_viewers_per_sliding_window() -> None:
     events = [
         make_event(60, "user-1", "prog-a", "play_start"),

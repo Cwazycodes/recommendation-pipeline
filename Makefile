@@ -11,7 +11,7 @@ MALFORMED_RATE ?= 0.0
 DUP_RATE ?= 0.0
 JOB_ARGS ?=
 
-.PHONY: help install fmt lint typecheck test check hooks generate up down topics logs produce test-int
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int
 
 ## Show all available targets and their descriptions.
 help:
@@ -41,7 +41,11 @@ typecheck:
 
 ## Run automated tests and generate terminal and XML coverage reports.
 test:
-	poetry run pytest -m "not integration" --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
+	poetry run pytest -m "not integration and not slow" --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
+
+## Run the slow tests that start a local Flink mini-cluster (needs Java).
+test-flink:
+	poetry run pytest -m slow
 
 ## Run linting, type checking, and tests.
 check: lint typecheck test

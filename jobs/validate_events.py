@@ -19,10 +19,7 @@ from pyflink.datastream.connectors.kafka import (
 )
 from pyflink.table import StreamTableEnvironment
 
-from realtime_recommendation_pipeline.flink_jobs.dedup import (
-    DeduplicateEvents,
-    event_id_of,
-)
+from realtime_recommendation_pipeline.flink_jobs.dedup import deduplicate
 from realtime_recommendation_pipeline.flink_jobs.event_time import (
     to_events_table,
     viewing_event_watermarks,
@@ -113,11 +110,7 @@ def main() -> None:
     dead_letters = valid_events.get_side_output(DLQ_TAG)
     dead_letters.sink_to(build_kafka_sink(DLQ_TOPIC)).name("viewing-events-dlq-sink")
 
-    unique_events = (
-        valid_events.key_by(event_id_of, key_type=Types.STRING())
-        .process(DeduplicateEvents(), output_type=Types.STRING())
-        .name("deduplicate-events")
-    )
+    unique_events = deduplicate(valid_events)
 
     t_env = StreamTableEnvironment.create(env)
     t_env.get_config().set_local_timezone("UTC")

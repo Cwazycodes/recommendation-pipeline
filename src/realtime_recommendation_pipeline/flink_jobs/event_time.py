@@ -63,14 +63,23 @@ def to_event_row(event_json: str) -> Row:
     )
 
 
-def to_events_table(t_env: StreamTableEnvironment, events: DataStream) -> Table:
-    """Table of events whose event_time column is the stream's rowtime."""
+def to_events_table(
+    t_env: StreamTableEnvironment,
+    events: DataStream,
+    watermark: str = "SOURCE_WATERMARK()",
+) -> Table:
+    """Table of events whose event_time column is the stream's rowtime.
+
+    The default keeps the stream's own watermarks. Tests on bounded sources
+    pass a SQL expression instead, so lateness does not depend on timing.
+    """
+
     rows = events.map(to_event_row, output_type=EVENT_ROW_TYPE).name("to-event-rows")
 
     schema = (
         Schema.new_builder()
         .column_by_metadata("event_time", DataTypes.TIMESTAMP_LTZ(3), "rowtime")
-        .watermark("event_time", "SOURCE_WATERMARK()")
+        .watermark("event_time", watermark)
         .build()
     )
 
