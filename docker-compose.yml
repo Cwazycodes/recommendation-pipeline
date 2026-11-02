@@ -72,6 +72,8 @@ services:
   flink-taskmanager:
     image: recommendation-pipeline/flink:1.20.1
     command: taskmanager
+    # If the TaskManager dies, bring it back so the job's restart strategy has somewhere to run (see docs/design.md, "Checkpoints, restarts...").
+    restart: unless-stopped
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager

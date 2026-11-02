@@ -10,8 +10,9 @@ DURATION ?= 60
 MALFORMED_RATE ?= 0.0
 DUP_RATE ?= 0.0
 JOB_ARGS ?=
+SAVEPOINT ?=
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending
 
 ## Show all available targets and their descriptions.
 help:
@@ -94,6 +95,17 @@ test-int:
 submit-job:
 	@if [ -z "$(JOB)" ]; then echo "Usage: make submit-job JOB=smoke"; exit 1; fi
 	docker compose exec flink-jobmanager flink run -d \
+		$(if $(SAVEPOINT),--fromSavepoint $(SAVEPOINT)) \
 		-py /opt/flink/jobs/$(JOB).py \
 		-pyfs /opt/flink/src \
 		$(JOB_ARGS)
+
+## Stop the running job and write a savepoint to the checkpoint volume.
+stop-job:
+	@job_id=$$(docker compose exec -T flink-jobmanager flink list -r 2>/dev/null | awk -F ' : ' '/RUNNING/ {print $$2; exit}'); \
+	if [ -z "$$job_id" ]; then echo "No running job to stop."; exit 1; fi; \
+	docker compose exec -T flink-jobmanager flink stop --savepointPath file:///opt/flink/checkpoints/savepoints "$$job_id"
+
+## Check trending-results for gaps and duplicates, reading only committed rows.
+check-trending:
+	poetry run python -m realtime_recommendation_pipeline.tools.check_trending

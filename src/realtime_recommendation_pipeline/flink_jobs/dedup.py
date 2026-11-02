@@ -59,4 +59,5 @@ def deduplicate(events: DataStream) -> DataStream:
         events.key_by(event_id_of, key_type=Types.STRING())
         .process(DeduplicateEvents(), output_type=Types.STRING())
         .name("deduplicate-events")
+        .uid("deduplicate-events")
     )
