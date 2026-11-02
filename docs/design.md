@@ -94,6 +94,19 @@ Flink checkpoints and Kafka replay provide the intended recovery mechanism. Dyna
 
 Lambda exposes a read endpoint that returns the latest available trending results. The API returns a clear response when results are unavailable and does not perform the streaming aggregation itself.
 
+### Checkpoints, restarts and exactly-once output
+
+The job sets all of this itself (`flink_jobs/reliability.py`), so it travels with the job instead of depending on cluster settings.
+
+- **Checkpoints:** every 10 seconds, exactly-once, with a 2-minute timeout, and kept when the job is cancelled. State (Kafka offsets, deduplication flags, window aggregates and open sink transactions) lives in the RocksDB state backend with incremental checkpoints, written to the `flink-checkpoints` volume at `/opt/flink/checkpoints`.
+- **Exactly-once results:** the `trending-results` sink writes each checkpoint's rows in one Kafka transaction (transactional ID prefix `recommendation-pipeline-trending-results`) and commits it when the checkpoint completes. After a failure the job resumes from the last checkpoint, the open transaction is aborted, and its rows are written again, so a `read_committed` consumer sees each row exactly once. The cost is latency: rows become visible up to one checkpoint interval (10 s) after they are computed.
+- **Transaction timeout:** 10 minutes, under the broker's `transaction.max.timeout.ms` of 15 minutes; the Kafka sink's default of 1 hour makes the job fail at start-up. A transaction is open for one interval plus at most the 2-minute checkpoint timeout, which leaves about 8 minutes for a restart to finish it before Kafka aborts it and those rows are lost.
+- **Consumers:** downstream consumers read with `isolation.level=read_committed` (`common/kafka.py`). A `read_uncommitted` reader also sees rows from aborted transactions, so after a failure some windows can appear twice.
+- **Dead letters:** the DLQ sink stays at-least-once. After a failure a few bad events can be dead-lettered twice, which is acceptable for a diagnostic topic and keeps it readable without transactions.
+- **Restarts:** exponential backoff starting at 1 second, doubling up to 1 minute with 10% jitter, reset after 10 minutes without a failure.
+- **Planned stops:** `make stop-job` stops the job with a savepoint under `/opt/flink/checkpoints/savepoints`, and `make submit-job SAVEPOINT=<path>` resumes from it. Stateful operators have fixed `uid`s so their state maps back on restore; the trending SQL must stay the same between stop and resume.
+- **Known issue (PyFlink 1.20 with RocksDB):** cancelling the job, by `flink cancel` or as part of a failover, can crash the TaskManager JVM in RocksDB's native write path, because the Python worker's last state writes race with RocksDB shutting down. Stop-with-savepoint does not hit it. The TaskManager runs with `restart: unless-stopped`, so after a crash Docker restarts it and the restart strategy resumes the job from its last checkpoint. Use `make stop-job` rather than `flink cancel`. If the crashes matter more than RocksDB, `"state.backend.type": "hashmap"` avoids them; the state here is small.
+
 ### Deduplication
 
 `DeduplicateEvents` keys the validated stream by `event_id` and keeps a `seen` flag per key in Flink `ValueState`. The first copy of an event is forwarded; later copies are dropped and counted in the `duplicate_events` metric.
@@ -103,8 +116,8 @@ Lambda exposes a read endpoint that returns the latest available trending result
 - **Why not shorter:** duplicates come from client resends and producer retries (seconds) and from Kafka redelivery after a consumer restart or rebalance (seconds to minutes). One hour covers both with a wide margin.
 - **Why not longer:** state grows with unique events per second multiplied by the TTL. At the 500 events/s test rate one hour is about 1.8 million keys (500 × 3,600), and every extra hour adds the same again. The heap state backend keeps all of it in TaskManager memory.
 - **What it does not catch:** a copy that arrives more than an hour after the first one is counted again, for example a backlog replayed after an outage longer than the TTL. TTL uses processing time, so it measures time since Flink saw the event, not the event's `event_time`.
-- **Interaction with checkpoints:** on failure, Flink restores the `seen` state and the Kafka offsets from the same checkpoint, so replayed events are judged against consistent state. Events emitted after that checkpoint are emitted again, so sinks still see at-least-once output, which is why result writes must be idempotent.
-- **If the trade-off changes:** a longer TTL on the RocksDB state backend moves state to disk, and once watermarks exist (RP-14) event-time timers could expire state by `event_time` instead of wall-clock time.
+- **Interaction with checkpoints:** on failure, Flink restores the `seen` state and the Kafka offsets from the same checkpoint, so replayed events are judged against consistent state. Rows emitted after that checkpoint are emitted again; the trending sink writes them in a Kafka transaction that only commits with a checkpoint, so `read_committed` consumers still see each row once.
+- **If the trade-off changes:** state lives in RocksDB on disk, so a longer TTL costs disk space rather than TaskManager memory, and event-time timers could expire state by `event_time` instead of wall-clock time.
 
 ### Testing against an oracle
 

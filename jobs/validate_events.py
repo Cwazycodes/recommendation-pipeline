@@ -24,6 +24,11 @@ from realtime_recommendation_pipeline.flink_jobs.event_time import (
     to_events_table,
     viewing_event_watermarks,
 )
+from realtime_recommendation_pipeline.flink_jobs.reliability import (
+    TRANSACTION_TIMEOUT_MS,
+    job_settings,
+    to_flink_configuration,
+)
 from realtime_recommendation_pipeline.flink_jobs.trending import (
     parse_trending_config,
     to_trending_json,
@@ -61,8 +66,8 @@ class ValidateEvents(ProcessFunction):
         yield DLQ_TAG, json.dumps(result.dead_letter)
 
 
-def build_kafka_sink(topic: str) -> KafkaSink:
-    return (
+def build_kafka_sink(topic: str, *, exactly_once: bool = False) -> KafkaSink:
+    builder = (
         KafkaSink.builder()
         .set_bootstrap_servers(BOOTSTRAP_SERVERS)
         .set_record_serializer(
@@ -71,16 +76,26 @@ def build_kafka_sink(topic: str) -> KafkaSink:
             .set_value_serialization_schema(SimpleStringSchema())
             .build()
         )
-        .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+    )
+
+    if not exactly_once:
+        return builder.set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE).build()
+
+    # Rows go out in a Kafka transaction that commits when the checkpoint completes. The prefix must be unique per sink and stay the same across restarts, so Flink can find and finish or abort its old transactions.
+    return (
+        builder.set_delivery_guarantee(DeliveryGuarantee.EXACTLY_ONCE)
+        .set_transactional_id_prefix(f"recommendation-pipeline-{topic}")
+        .set_property("transaction.timeout.ms", str(TRANSACTION_TIMEOUT_MS))
         .build()
     )
 
 
 def main() -> None:
     config = parse_trending_config()
-    env = StreamExecutionEnvironment.get_execution_environment()
+    env = StreamExecutionEnvironment.get_execution_environment(
+        to_flink_configuration(job_settings())
+    )
     env.set_parallelism(1)
-    env.enable_checkpointing(10_000)
 
     source = (
         KafkaSource.builder()
@@ -100,7 +115,7 @@ def main() -> None:
         source,
         viewing_event_watermarks(),
         "viewing-events-source",
-    )
+    ).uid("viewing-events-source")
 
     valid_events = raw_events.process(
         ValidateEvents(),
@@ -108,7 +123,11 @@ def main() -> None:
     ).name("validate-events")
 
     dead_letters = valid_events.get_side_output(DLQ_TAG)
-    dead_letters.sink_to(build_kafka_sink(DLQ_TOPIC)).name("viewing-events-dlq-sink")
+    (
+        dead_letters.sink_to(build_kafka_sink(DLQ_TOPIC))
+        .name("viewing-events-dlq-sink")
+        .uid("viewing-events-dlq-sink")
+    )
 
     unique_events = deduplicate(valid_events)
 
@@ -124,8 +143,9 @@ def main() -> None:
         t_env.to_data_stream(trending)
         .map(to_trending_json, output_type=Types.STRING())
         .name("to-trending-json")
-        .sink_to(build_kafka_sink(TRENDING_TOPIC))
+        .sink_to(build_kafka_sink(TRENDING_TOPIC, exactly_once=True))
         .name("trending-results-sink")
+        .uid("trending-results-sink")
     )
 
     env.execute("validate-viewing-events")
