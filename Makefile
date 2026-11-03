@@ -12,8 +12,9 @@ DUP_RATE ?= 0.0
 JOB_ARGS ?=
 SAVEPOINT ?=
 DYNAMODB_ENDPOINT ?= http://localhost:8001
+LIMIT ?= 10
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local
 
 ## Show all available targets and their descriptions.
 help:
@@ -131,3 +132,9 @@ writer:
 check-writer:
 	poetry run python -m realtime_recommendation_pipeline.tools.check_writer \
 		--endpoint-url $(DYNAMODB_ENDPOINT)
+
+## Call the API's Lambda handler against DynamoDB Local (GET /trending?limit=LIMIT).
+api-local:
+	poetry run python -m realtime_recommendation_pipeline.tools.api_local \
+		--endpoint-url $(DYNAMODB_ENDPOINT) \
+		--limit $(LIMIT)
