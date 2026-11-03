@@ -29,3 +29,4 @@ create_topic() {
 create_topic viewing-events 6 --config retention.ms=-1
 create_topic trending-results 1
 create_topic viewing-events-dlq 6 --config retention.ms=-1
+create_topic trending-writer-dlq 1

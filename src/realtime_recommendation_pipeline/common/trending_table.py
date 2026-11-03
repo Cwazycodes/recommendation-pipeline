@@ -34,10 +34,17 @@ def load_table_definition(path: Path) -> dict[str, Any]:
     return definition
 
 
-def dynamodb_resource(endpoint_url: str | None = None) -> Any:
-    """boto3 DynamoDB resource; pass endpoint_url to use DynamoDB Local."""
+def dynamodb_resource(
+    endpoint_url: str | None = None, config: Config | None = None
+) -> Any:
+    """boto3 DynamoDB resource; pass endpoint_url to use DynamoDB Local.
+
+    Settings in config are added to the defaults and win over them.
+    """
     if endpoint_url is None:
-        return boto3.resource("dynamodb")
+        return boto3.resource("dynamodb", config=config)
+
+    local_config = LOCAL_CLIENT_CONFIG.merge(config) if config else LOCAL_CLIENT_CONFIG
 
     # With -sharedDb, DynamoDB Local accepts any credentials and region.
     return boto3.resource(
@@ -46,7 +53,7 @@ def dynamodb_resource(endpoint_url: str | None = None) -> Any:
         region_name="us-east-1",
         aws_access_key_id="local",
         aws_secret_access_key="local",
-        config=LOCAL_CLIENT_CONFIG,
+        config=local_config,
     )
 
 
