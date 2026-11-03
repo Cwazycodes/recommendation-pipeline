@@ -13,7 +13,7 @@ JOB_ARGS ?=
 SAVEPOINT ?=
 DYNAMODB_ENDPOINT ?= http://localhost:8001
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer
 
 ## Show all available targets and their descriptions.
 help:
@@ -120,4 +120,14 @@ db-init:
 ## Write sample windows to DynamoDB Local and read the latest back.
 db-smoke:
 	poetry run python -m realtime_recommendation_pipeline.tools.db_smoke \
+		--endpoint-url $(DYNAMODB_ENDPOINT)
+
+## Write trending-results windows to DynamoDB Local (Ctrl-C stops it cleanly).
+writer:
+	poetry run python -m realtime_recommendation_pipeline.writer.results_writer \
+		--endpoint-url $(DYNAMODB_ENDPOINT)
+
+## Check the table holds one correct item per window on trending-results.
+check-writer:
+	poetry run python -m realtime_recommendation_pipeline.tools.check_writer \
 		--endpoint-url $(DYNAMODB_ENDPOINT)

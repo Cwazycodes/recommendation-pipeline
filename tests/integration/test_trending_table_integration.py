@@ -1,17 +1,13 @@
 """Integration tests for the trending table against DynamoDB Local."""
 
-import time
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
-from testcontainers.core.container import DockerContainer
 
 from realtime_recommendation_pipeline.common.trending_table import (
     create_table_if_missing,
-    dynamodb_resource,
     latest_window,
     load_table_definition,
     put_window,
@@ -23,34 +19,6 @@ pytestmark = pytest.mark.integration
 DEFINITION = load_table_definition(
     Path(__file__).resolve().parents[2] / "infra" / "dynamodb" / "trending-table.json"
 )
-
-
-@pytest.fixture(scope="module")
-def dynamodb() -> Iterator[Any]:
-    container = (
-        DockerContainer("amazon/dynamodb-local:3.3.2")
-        .with_command("-jar DynamoDBLocal.jar -inMemory -sharedDb")
-        .with_exposed_ports(8000)
-    )
-
-    with container:
-        host = container.get_container_host_ip()
-        resource = dynamodb_resource(
-            f"http://{host}:{container.get_exposed_port(8000)}"
-        )
-
-        deadline = time.monotonic() + 30
-        while True:
-            try:
-                resource.meta.client.list_tables()
-                break
-            except Exception:
-                if time.monotonic() > deadline:
-                    raise
-                time.sleep(0.5)
-
-        assert create_table_if_missing(resource.meta.client, DEFINITION) is True
-        yield resource
 
 
 def test_creating_the_table_again_is_a_no_op(dynamodb: Any) -> None:
