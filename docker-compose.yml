@@ -85,7 +85,18 @@ services:
     depends_on:
       - flink-jobmanager
       - kafka
+  dynamodb-local:
+    image: amazon/dynamodb-local:3.3.2
+    container_name: recommendation-dynamodb
+    user: root
+    command: -jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal/data
+    ports:
+      # Host 8001, because 8000 is often taken by other local servers.
+      - "8001:8000"
+    volumes:
+      - dynamodb_data:/home/dynamodblocal/data
 
 volumes:
   kafka_data:
   flink-checkpoints:
+  dynamodb_data:

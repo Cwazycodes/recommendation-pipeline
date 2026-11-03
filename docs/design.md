@@ -94,6 +94,18 @@ Flink checkpoints and Kafka replay provide the intended recovery mechanism. Dyna
 
 Lambda exposes a read endpoint that returns the latest available trending results. The API returns a clear response when results are unavailable and does not perform the streaming aggregation itself.
 
+### Serving table (DynamoDB)
+
+The read path answers one question, "what is trending now?", so the table is designed around that query.
+
+- **Table `trending`:** partition key `pk`, sort key `sk`, both strings, on-demand billing. Each window is one item: `pk = "TRENDING#1h"` (one partition for the 1-hour lists), `sk = window_end` as ISO 8601 UTC (`2026-09-21T18:10:00Z`), plus `items` (the ranked list of `rank`, `programme_id`, `score`), `generated_at` and `ttl`.
+- **Latest list:** one `Query` on `pk = "TRENDING#1h"` with `ScanIndexForward=false` and `Limit=1`. ISO 8601 UTC strings sort in time order, so reading the partition backwards returns the newest window first.
+- **Idempotent writes:** the window is the key, so writing the same window again replaces it instead of adding a copy.
+- **Expiry:** `ttl` is `generated_at` plus 24 hours, in epoch seconds. It counts from when the list was written, not from `window_end`, because replayed or synthetic windows can already be days old. AWS deletes expired items lazily (typically within two days), so the latest-list query also filters on `#ttl > :now` and returns nothing rather than a stale list.
+- **Reserved words:** `ttl` and `items` are DynamoDB reserved words, so expressions refer to them through placeholders such as `#ttl`.
+- **One definition:** `infra/dynamodb/trending-table.json` is the only description of the table. `make db-init` creates it in DynamoDB Local, and the Terraform in RP-27 must read the same file so the two cannot drift.
+- **Locally:** DynamoDB Local runs in Compose on port 8001 with `-sharedDb`, so every client sees one database whatever credentials or region it uses. Unlike AWS it deletes expired items within seconds.
+
 ### Checkpoints, restarts and exactly-once output
 
 The job sets all of this itself (`flink_jobs/reliability.py`), so it travels with the job instead of depending on cluster settings.
