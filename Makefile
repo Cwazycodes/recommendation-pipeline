@@ -11,8 +11,9 @@ MALFORMED_RATE ?= 0.0
 DUP_RATE ?= 0.0
 JOB_ARGS ?=
 SAVEPOINT ?=
+DYNAMODB_ENDPOINT ?= http://localhost:8001
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke
 
 ## Show all available targets and their descriptions.
 help:
@@ -87,9 +88,9 @@ produce:
 		--malformed-rate $(MALFORMED_RATE) \
 		--dup-rate $(DUP_RATE)
 
-## Run Kafka integration tests.
+## Run integration tests (Kafka and DynamoDB Local in Docker).
 test-int:
-	poetry run pytest -m integration
+	TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock poetry run pytest -m integration
 
 ## Submit a PyFlink job from jobs/ (e.g. make submit-job JOB=validate_events).
 submit-job:
@@ -109,3 +110,14 @@ stop-job:
 ## Check trending-results for gaps and duplicates, reading only committed rows.
 check-trending:
 	poetry run python -m realtime_recommendation_pipeline.tools.check_trending
+
+## Create the DynamoDB Local table from infra/dynamodb/trending-table.json.
+db-init:
+	poetry run python -m realtime_recommendation_pipeline.tools.db_init \
+		--endpoint-url $(DYNAMODB_ENDPOINT) \
+		--definition infra/dynamodb/trending-table.json
+
+## Write sample windows to DynamoDB Local and read the latest back.
+db-smoke:
+	poetry run python -m realtime_recommendation_pipeline.tools.db_smoke \
+		--endpoint-url $(DYNAMODB_ENDPOINT)
