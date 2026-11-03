@@ -133,6 +133,27 @@ The job sets all of this itself (`flink_jobs/reliability.py`), so it travels wit
 - **Checking it:** `make check-writer` rebuilds the items an uninterrupted writer would produce from `trending-results` and compares them with the table: no missing, extra or wrong windows, and no repeated ranks. Windows past their `ttl` are skipped, because DynamoDB deletes them.
 - **Assumptions:** one partition and one writer. A window's rows are contiguous only within a partition, so with more partitions the buffer would have to track windows per partition.
 
+### Read API (Lambda handler)
+
+`api/handler.py` is the read path. API Gateway (HTTP API, payload format 2.0) calls `handler(event, context)` for `GET /trending`, and it answers from the `trending` table with the one-item query above. It is a plain function, so it is built and tested before any AWS resource exists.
+
+- **Request:** `GET /trending?limit=N`. `limit` is a whole number from 1 to 20 (the job ranks 20 programmes per window) and defaults to 10. Any other query parameter is rejected, so a typo such as `limt=5` is an error instead of being ignored. API Gateway joins a repeated parameter with commas, so `limit=5&limit=6` is rejected too. Methods other than GET get a 405.
+- **Responses:** all JSON, with `content-type: application/json`.
+
+  | Status | When | Body |
+  |---|---|---|
+  | 200 | A window exists and has not expired | `window_end`, `generated_at`, `limit`, and `items`: the first `limit` entries of `rank`, `programme_id`, `score` |
+  | 400 | Invalid query | `{"error": "invalid_limit"}` or `{"error": "unknown_parameter"}`, with a `message` |
+  | 404 | No window yet, or the newest one is past its `ttl` | `{"error": "no_trending_data", "message": ...}` |
+  | 405 | Not a GET | `{"error": "method_not_allowed", "message": ...}`, with an `allow: GET` header |
+  | 500 | DynamoDB failed: unreachable, throttled or missing table | `{"error": "internal_error", "message": ...}` |
+
+- **Bugs are not hidden:** only DynamoDB errors (botocore's `ClientError` and `BotoCoreError`) become a 500 body. Anything else raises, so Lambda counts the invocation as failed and API Gateway returns its own 500.
+- **Logs:** one JSON object per request on stdout, which Lambda sends to CloudWatch Logs: `level`, the API Gateway `request_id`, the Lambda `lambda_request_id`, `method`, `query`, `status`, `error`, `window_end`, `items` and `duration_ms`. A 500 is logged at `ERROR` with the exception's type and message.
+- **Configuration:** `TABLE_NAME` (default `trending`) and, locally, `DYNAMODB_ENDPOINT_URL`. The DynamoDB resource is created once per Lambda container and reused across requests. Its client gives up quickly, with a 1 s connect timeout, a 2 s read timeout and 2 tries, instead of boto3's default 60 s read timeout, so a request fails within about 7 seconds and the Lambda timeout must be longer than that.
+- **Dependencies:** the handler imports only boto3, which the Lambda Python runtime includes, and nothing from Kafka, Flink or pydantic. A test checks this, so the function can be deployed without bundling the pipeline's other dependencies.
+- **Testing:** unit tests call the handler with moto, on a table created from `infra/dynamodb/trending-table.json`, using an API Gateway HTTP API (payload 2.0) event fixture, `tests/fixtures/http_api_get_trending.json`. `make api-local LIMIT=5` builds the same kind of event and calls the handler against DynamoDB Local.
+
 ### Deduplication
 
 `DeduplicateEvents` keys the validated stream by `event_id` and keeps a `seen` flag per key in Flink `ValueState`. The first copy of an event is forwarded; later copies are dropped and counted in the `duplicate_events` metric.

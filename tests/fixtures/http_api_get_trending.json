@@ -1,0 +1,38 @@
+{
+  "version": "2.0",
+  "routeKey": "GET /trending",
+  "rawPath": "/trending",
+  "rawQueryString": "limit=10",
+  "headers": {
+    "accept": "application/json",
+    "content-length": "0",
+    "host": "a1b2c3d4e5.execute-api.eu-west-2.amazonaws.com",
+    "user-agent": "curl/8.7.1",
+    "x-amzn-trace-id": "Root=1-6727b1c4-1f2b3c4d5e6f7a8b9c0d1e2f",
+    "x-forwarded-for": "203.0.113.10",
+    "x-forwarded-port": "443",
+    "x-forwarded-proto": "https"
+  },
+  "queryStringParameters": {
+    "limit": "10"
+  },
+  "requestContext": {
+    "accountId": "123456789012",
+    "apiId": "a1b2c3d4e5",
+    "domainName": "a1b2c3d4e5.execute-api.eu-west-2.amazonaws.com",
+    "domainPrefix": "a1b2c3d4e5",
+    "http": {
+      "method": "GET",
+      "path": "/trending",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "203.0.113.10",
+      "userAgent": "curl/8.7.1"
+    },
+    "requestId": "KxYz1jAbLPEEJ2A=",
+    "routeKey": "GET /trending",
+    "stage": "$default",
+    "time": "03/Nov/2026:12:00:00 +0000",
+    "timeEpoch": 1793707200000
+  },
+  "isBase64Encoded": false
+}

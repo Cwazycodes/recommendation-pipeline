@@ -20,7 +20,8 @@ dev = [
     "ruff (>=0.17.2,<0.18.0)",
     "mypy (>=2.4.0,<3.0.0)",
     "pre-commit (>=4.7.0,<5.0.0)",
-    "testcontainers (>=4.10,<5)"
+    "testcontainers (>=4.10,<5)",
+    "moto[dynamodb] (>=5.2,<6)",
 ]
 flink = [
     "apache-flink (==1.20.1)",
