@@ -16,8 +16,9 @@ LIMIT ?= 10
 KAFKA_BOOTSTRAP ?= localhost:9092
 FLINK_URL ?= http://localhost:8081
 DEMO_DURATION ?= 120
+CHAOS_DRILLS ?= taskmanager kafka writer dynamodb
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos
 
 ## Show all available targets and their descriptions.
 help:
@@ -154,3 +155,11 @@ demo: up
 test-e2e: up
 	KAFKA_BOOTSTRAP=$(KAFKA_BOOTSTRAP) FLINK_URL=$(FLINK_URL) \
 		DYNAMODB_ENDPOINT=$(DYNAMODB_ENDPOINT) poetry run pytest -m e2e -s
+
+## Run the failure drills on the local stack and record the results in docs/reliability.md.
+chaos: up
+	poetry run python -m realtime_recommendation_pipeline.tools.chaos \
+		--bootstrap-servers $(KAFKA_BOOTSTRAP) \
+		--flink-url $(FLINK_URL) \
+		--endpoint-url $(DYNAMODB_ENDPOINT) \
+		$(foreach drill,$(CHAOS_DRILLS),--drill $(drill))

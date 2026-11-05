@@ -17,7 +17,7 @@ import threading
 import time
 import urllib.request
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +65,14 @@ TOPICS = {EVENTS_TOPIC: 6, TRENDING_TOPIC: 1, EVENTS_DLQ_TOPIC: 6, WRITER_DLQ_TO
 # within 10 s, fires 30 s later when the watermark passes it, and is committed
 # by the next checkpoint (every 10 s). The rest is room for a slow laptop.
 RESULTS_WITHIN_S = 90
+
+DEMO_JOB_ARGS = [
+    "--window-size-seconds", str(WINDOW_SIZE_S),
+    "--window-slide-seconds", str(WINDOW_SLIDE_S),
+    "--source-topic", EVENTS_TOPIC,
+    "--trending-topic", TRENDING_TOPIC,
+    "--dlq-topic", EVENTS_DLQ_TOPIC,
+]  # fmt: skip
 
 SAVEPOINT_DIR = "file:///opt/flink/checkpoints/savepoints"
 
@@ -144,18 +152,18 @@ def wait_for_services(settings: DemoSettings) -> None:
     )
 
 
-def recreate_topics(bootstrap_servers: str) -> None:
-    """Delete the demo topics if they exist and create them empty."""
+def recreate_topics(bootstrap_servers: str, topics: Mapping[str, int] = TOPICS) -> None:
+    """Delete these topics if they exist and create them empty."""
     admin = AdminClient({"bootstrap.servers": bootstrap_servers})
 
     existing = admin.list_topics(timeout=10).topics
-    stale = [topic for topic in TOPICS if topic in existing]
+    stale = [topic for topic in topics if topic in existing]
     for future in admin.delete_topics(stale).values() if stale else []:
         future.result(30)
 
     # Deletion finishes in the background, so creating can briefly fail with
     # "already exists"; try again until it works.
-    pending = dict(TOPICS)
+    pending = dict(topics)
     deadline = time.monotonic() + 60
     while pending:
         futures = admin.create_topics(
@@ -174,18 +182,14 @@ def recreate_topics(bootstrap_servers: str) -> None:
             time.sleep(1)
 
 
-def submit_job() -> str:
-    """Submit the streaming job with demo windows and topics; return its id."""
+def submit_job(job_args: Sequence[str] = DEMO_JOB_ARGS) -> str:
+    """Submit the streaming job with these arguments; return its id."""
     command = [
         "docker", "compose", "exec", "-T", "flink-jobmanager",
         "flink", "run", "-d",
         "-py", "/opt/flink/jobs/validate_events.py",
         "-pyfs", "/opt/flink/src",
-        "--window-size-seconds", str(WINDOW_SIZE_S),
-        "--window-slide-seconds", str(WINDOW_SLIDE_S),
-        "--source-topic", EVENTS_TOPIC,
-        "--trending-topic", TRENDING_TOPIC,
-        "--dlq-topic", EVENTS_DLQ_TOPIC,
+        *job_args,
     ]  # fmt: skip
     result = subprocess.run(
         command, check=False, cwd=REPO_ROOT, capture_output=True, text=True

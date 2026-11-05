@@ -33,7 +33,9 @@ from realtime_recommendation_pipeline.writer.windows import (
 )
 
 
-def expected_items(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def expected_items(
+    rows: Sequence[dict[str, Any]], partition_key: str = PARTITION_KEY
+) -> dict[str, dict[str, Any]]:
     """Each window's item as a writer that never stopped would leave it."""
     buffer = WindowBuffer()
     items = {}
@@ -41,18 +43,20 @@ def expected_items(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     for offset, row in enumerate(rows):
         complete = buffer.add((TRENDING_TOPIC, 0), offset, row)
         if complete is not None:
-            items[complete.window_end] = window_to_item(complete)
+            items[complete.window_end] = window_to_item(complete, partition_key)
 
     last = buffer.take()
     if last is not None:
-        items[last.window_end] = window_to_item(last)
+        items[last.window_end] = window_to_item(last, partition_key)
 
     return items
 
 
-def table_items(table: Any) -> dict[str, dict[str, Any]]:
-    """Every window item in the table, by window_end."""
-    query: dict[str, Any] = {"KeyConditionExpression": Key("pk").eq(PARTITION_KEY)}
+def table_items(
+    table: Any, partition_key: str = PARTITION_KEY
+) -> dict[str, dict[str, Any]]:
+    """Every window item under partition_key, by window_end."""
+    query: dict[str, Any] = {"KeyConditionExpression": Key("pk").eq(partition_key)}
     items = {}
 
     while True:

@@ -3,9 +3,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError
+from botocore.exceptions import (
+    ClientError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 
-from realtime_recommendation_pipeline.writer.results_writer import ResultsWriter
+from realtime_recommendation_pipeline.writer.results_writer import (
+    ResultsWriter,
+    writer_consumer_config,
+)
 from realtime_recommendation_pipeline.writer.retry import (
     RetryPolicy,
     is_retryable,
@@ -403,25 +410,62 @@ def test_window_that_keeps_failing_goes_to_the_dlq_and_is_committed() -> None:
     assert consumer.committed == 10
 
 
-@pytest.mark.parametrize(
-    ("table_errors", "dlq_error"),
-    [
-        ([EndpointConnectionError(endpoint_url="http://localhost:8001")], None),
-        ([throttled()] * 3, RuntimeError("DLQ unavailable")),
-    ],
-    ids=["dynamodb-unreachable", "dlq-unavailable"],
-)
-def test_writer_stops_without_committing_when_a_window_is_not_handled(
-    table_errors: list[Exception], dlq_error: Exception | None
-) -> None:
+def test_writer_stops_without_committing_when_the_dlq_is_down() -> None:
     consumer = FakeConsumer()
-    writer = make_writer(consumer, FakeTable(table_errors), FakeDeadLetters(dlq_error))
+    writer = make_writer(
+        consumer,
+        FakeTable([throttled()] * 3),
+        FakeDeadLetters(RuntimeError("DLQ unavailable")),
+    )
 
-    with pytest.raises((EndpointConnectionError, RuntimeError)):
+    with pytest.raises(RuntimeError):
         for _ in range(4):
             writer.poll_once()
 
     assert consumer.committed == 0
+
+
+@pytest.mark.parametrize(
+    "unreachable",
+    [
+        EndpointConnectionError(endpoint_url="http://localhost:8001"),
+        ReadTimeoutError(endpoint_url="http://localhost:8001"),
+    ],
+    ids=["connection-refused", "read-timeout"],
+)
+def test_unreachable_dynamodb_is_waited_out_without_committing(
+    unreachable: Exception,
+) -> None:
+    consumer = FakeConsumer()
+    table = FakeTable([unreachable] * 4)
+    dead_letters = FakeDeadLetters()
+    waits: list[tuple[float, int]] = []
+    writer = ResultsWriter(
+        consumer,
+        table,
+        dead_letters,
+        RetryPolicy(max_attempts=3),
+        sleep=lambda seconds: waits.append((seconds, consumer.committed)),
+        outage_backoff=RetryPolicy(base_delay_s=1.0, max_delay_s=30.0),
+    )
+
+    for _ in range(4):  # the first row of the next window completes the first
+        writer.poll_once()
+
+    # Four failed tries, each followed by a wait, and nothing committed while
+    # waiting; the fifth try writes the window and only then commits.
+    assert len(waits) == 4
+    assert all(committed == 0 for _seconds, committed in waits)
+    assert all(0 <= seconds <= 30 for seconds, _committed in waits)
+    assert dead_letters.records == []
+    assert list(table.items) == ["2026-09-21T14:00:00Z"]
+    assert consumer.committed == 4
+
+
+def test_writer_can_wait_out_long_outages_without_leaving_its_group() -> None:
+    config = writer_consumer_config("localhost:9092")
+
+    assert int(config["max.poll.interval.ms"]) == 30 * 60 * 1000
 
 
 def test_writer_uses_the_partition_key_it_is_given() -> None:
