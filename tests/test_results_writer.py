@@ -422,3 +422,21 @@ def test_writer_stops_without_committing_when_a_window_is_not_handled(
             writer.poll_once()
 
     assert consumer.committed == 0
+
+
+def test_writer_uses_the_partition_key_it_is_given() -> None:
+    clock = FakeClock()
+    table = FakeTable()
+    writer = ResultsWriter(
+        FakeConsumer(),
+        table,
+        FakeDeadLetters(),
+        clock=clock,
+        sleep=lambda _seconds: None,
+        partition_key="TRENDING#2m",
+    )
+
+    drain(writer, clock)
+
+    assert sorted(table.items) == sorted(WINDOWS)
+    assert {item["pk"] for item in table.items.values()} == {"TRENDING#2m"}

@@ -64,6 +64,20 @@ def kafka_timestamp_ms(event: dict[str, object]) -> int:
     raise ValueError("event has neither an integer event_time nor produced_at")
 
 
+def live_event(event: dict[str, object], now_ms: int) -> dict[str, object]:
+    """The event re-stamped as happening now, so windows follow the wall clock.
+
+    Generated event times start on a fixed date and run hundreds of times
+    faster than real time; a live demo needs them to be the time of sending.
+    A malformed event_time is kept, so the event is still dead-lettered.
+    """
+    stamped = {**event, "produced_at": now_ms}
+    if isinstance(event["event_time"], int):
+        stamped["event_time"] = now_ms
+
+    return stamped
+
+
 def produce_events(
     *,
     bootstrap_servers: str,
@@ -73,6 +87,8 @@ def produce_events(
     producer_factory: Callable[..., Producer] = Producer,
     malformed_rate: float = 0.0,
     dup_rate: float = 0.0,
+    topic: str = "viewing-events",
+    live: bool = False,
 ) -> dict[str, int]:
     """Generate and publish events at the requested rate."""
     if rate <= 0:
@@ -118,12 +134,15 @@ def produce_events(
             if _STOP_REQUESTED:
                 break
 
+            if live:
+                event = live_event(event, time.time_ns() // 1_000_000)
+
             user_id = str(event["user_id"])
             timestamp = kafka_timestamp_ms(event)
 
             try:
                 producer.produce(
-                    topic="viewing-events",
+                    topic=topic,
                     key=user_id.encode("utf-8"),
                     value=json.dumps(event).encode("utf-8"),
                     timestamp=timestamp,
@@ -139,7 +158,7 @@ def produce_events(
                 producer.poll(0.1)
 
                 producer.produce(
-                    topic="viewing-events",
+                    topic=topic,
                     key=user_id.encode("utf-8"),
                     value=json.dumps(event).encode("utf-8"),
                     timestamp=timestamp,
@@ -190,6 +209,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--malformed-rate", type=float, default=0.0)
     parser.add_argument("--dup-rate", type=float, default=0.0)
+    parser.add_argument("--topic", default="viewing-events")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="stamp each event with the time it is sent instead of its generated time",
+    )
 
     args = parser.parse_args()
 
@@ -208,6 +233,8 @@ def main() -> None:
         seed=args.seed,
         malformed_rate=args.malformed_rate,
         dup_rate=args.dup_rate,
+        topic=args.topic,
+        live=args.live,
     )
 
 

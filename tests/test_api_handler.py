@@ -45,7 +45,7 @@ def ranked(count: int, top_score: int = 100) -> list[dict[str, Any]]:
 @pytest.fixture
 def aws(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """moto with fake credentials, so no test can reach a real AWS account."""
-    for name in ("AWS_PROFILE", "DYNAMODB_ENDPOINT_URL"):
+    for name in ("AWS_PROFILE", "DYNAMODB_ENDPOINT_URL", "PARTITION_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
@@ -252,6 +252,22 @@ def test_lambda_entry_point_reads_the_table_named_in_the_environment(
 
     assert response["statusCode"] == 200
     assert body(response)["window_end"] == "2026-09-21T18:10:00Z"
+
+
+def test_partition_key_in_the_environment_picks_the_list(
+    table: Any, event: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(UTC)
+    put_window(table, window_item("2026-09-21T18:10:00Z", ranked(20), now))
+    put_window(
+        table, window_item("2026-11-03T12:00:10Z", ranked(3), now, "TRENDING#2m")
+    )
+    monkeypatch.setenv("PARTITION_KEY", "TRENDING#2m")
+
+    response = handler(event, None)
+
+    assert body(response)["window_end"] == "2026-11-03T12:00:10Z"
+    assert body(response)["items"] == ranked(3)
 
 
 def test_handler_imports_nothing_the_lambda_runtime_lacks() -> None:

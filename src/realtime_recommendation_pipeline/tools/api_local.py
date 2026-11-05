@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from realtime_recommendation_pipeline.api.handler import default_table, handler
+from realtime_recommendation_pipeline.common.trending_table import PARTITION_KEY
 
 
 def http_api_event(query: Mapping[str, str]) -> dict[str, Any]:
@@ -56,26 +57,44 @@ def http_api_event(query: Mapping[str, str]) -> dict[str, Any]:
     return event
 
 
+def call_handler(
+    endpoint_url: str,
+    table: str = "trending",
+    limit: str | None = None,
+    partition_key: str = PARTITION_KEY,
+) -> dict[str, Any]:
+    """The handler's response to GET /trending, configured as Lambda will be."""
+    os.environ["DYNAMODB_ENDPOINT_URL"] = endpoint_url
+    os.environ["TABLE_NAME"] = table
+    os.environ["PARTITION_KEY"] = partition_key
+    default_table.cache_clear()
+
+    query = {} if limit is None else {"limit": limit}
+    context = SimpleNamespace(aws_request_id=f"local-{uuid.uuid4()}")
+
+    return handler(http_api_event(query), context)
+
+
+def print_response(response: Mapping[str, Any]) -> None:
+    print(f"HTTP {response['statusCode']}")
+    print(json.dumps(json.loads(response["body"]), indent=2))
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint-url", default="http://localhost:8001")
     parser.add_argument("--table", default="trending")
+    parser.add_argument("--partition-key", default=PARTITION_KEY)
     parser.add_argument(
         "--limit", help="sent as given, so invalid values can be tried as well"
     )
     args = parser.parse_args(argv)
 
-    # Configure the handler the way the Lambda function's environment will.
-    os.environ["DYNAMODB_ENDPOINT_URL"] = args.endpoint_url
-    os.environ["TABLE_NAME"] = args.table
-    default_table.cache_clear()
+    response = call_handler(
+        args.endpoint_url, args.table, args.limit, args.partition_key
+    )
 
-    query = {} if args.limit is None else {"limit": args.limit}
-    context = SimpleNamespace(aws_request_id=f"local-{uuid.uuid4()}")
-    response = handler(http_api_event(query), context)
-
-    print(f"HTTP {response['statusCode']}")
-    print(json.dumps(json.loads(response["body"]), indent=2))
+    print_response(response)
     sys.exit(0 if response["statusCode"] == 200 else 1)
 
 
