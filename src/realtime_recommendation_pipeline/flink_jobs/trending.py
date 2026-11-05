@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import time
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 from pyflink.common import Row
@@ -14,38 +12,24 @@ from pyflink.table import StreamTableEnvironment, Table
 
 @dataclass(frozen=True)
 class TrendingConfig:
-    """HOP window size and slide, and how many programmes to rank."""
+    """HOP window size and slide in seconds, and how many programmes to rank."""
 
-    window_size_minutes: int = 60
-    window_slide_minutes: int = 5
+    window_size_seconds: int = 3600
+    window_slide_seconds: int = 300
     top_n: int = 20
 
     def __post_init__(self) -> None:
-        if min(self.window_size_minutes, self.window_slide_minutes, self.top_n) < 1:
+        if min(self.window_size_seconds, self.window_slide_seconds, self.top_n) < 1:
             raise ValueError("window size, slide and top_n must be at least 1")
 
-        if self.window_size_minutes % self.window_slide_minutes:
+        if self.window_size_seconds % self.window_slide_seconds:
             raise ValueError("window size must be a whole multiple of the slide")
 
 
-def parse_trending_config(argv: Sequence[str] | None = None) -> TrendingConfig:
-    """Read the trending settings from job arguments."""
-    parser = argparse.ArgumentParser(description="Trending programmes job.")
-    parser.add_argument("--window-size-minutes", type=int, default=60)
-    parser.add_argument("--window-slide-minutes", type=int, default=5)
-    parser.add_argument("--top-n", type=int, default=20)
-    args = parser.parse_args(argv)
-
-    return TrendingConfig(
-        window_size_minutes=args.window_size_minutes,
-        window_slide_minutes=args.window_slide_minutes,
-        top_n=args.top_n,
-    )
-
-
-def minutes_interval(minutes: int) -> str:
-    """SQL interval literal; MINUTE alone only allows two digits (max 99)."""
-    return f"INTERVAL '{minutes // 60}:{minutes % 60:02d}' HOUR TO MINUTE"
+def seconds_interval(seconds: int) -> str:
+    """SQL interval literal; SECOND alone only allows two digits (max 99)."""
+    hours, rest = divmod(seconds, 3600)
+    return f"INTERVAL '{hours}:{rest // 60:02d}:{rest % 60:02d}' HOUR TO SECOND"
 
 
 def trending_sql(view: str, config: TrendingConfig) -> str:
@@ -70,8 +54,8 @@ def trending_sql(view: str, config: TrendingConfig) -> str:
                     HOP(
                         TABLE {view},
                         DESCRIPTOR(event_time),
-                        {minutes_interval(config.window_slide_minutes)},
-                        {minutes_interval(config.window_size_minutes)}
+                        {seconds_interval(config.window_slide_seconds)},
+                        {seconds_interval(config.window_size_seconds)}
                     )
                 )
                 WHERE event_type IN ('play_start', 'heartbeat')

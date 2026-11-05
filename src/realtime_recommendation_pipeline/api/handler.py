@@ -21,6 +21,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from realtime_recommendation_pipeline.common.trending_table import (
+    PARTITION_KEY,
     dynamodb_resource,
     latest_window,
 )
@@ -97,7 +98,12 @@ def parse_limit(query: Mapping[str, str] | None) -> int:
     return int(value)
 
 
-def respond(event: Mapping[str, Any], table: Any, now: datetime) -> Reply:
+def respond(
+    event: Mapping[str, Any],
+    table: Any,
+    now: datetime,
+    partition_key: str = PARTITION_KEY,
+) -> Reply:
     """The reply to one request; DynamoDB errors are left to the caller."""
     method = event.get("requestContext", {}).get("http", {}).get("method")
     if method != "GET":
@@ -108,7 +114,7 @@ def respond(event: Mapping[str, Any], table: Any, now: datetime) -> Reply:
     except BadRequest as bad:
         return error(400, bad.code, bad.message)
 
-    latest = latest_window(table, now)
+    latest = latest_window(table, now, partition_key)
     if latest is None:
         return error(404, "no_trending_data", "No trending results are available yet.")
 
@@ -150,13 +156,14 @@ def handle(
     table: Any,
     now: datetime | None = None,
     lambda_request_id: str | None = None,
+    partition_key: str = PARTITION_KEY,
 ) -> dict[str, Any]:
     """Answer one API Gateway event and log it as a single JSON line."""
     started = time.perf_counter()
     outcome: dict[str, Any] = {}
 
     try:
-        reply = respond(event, table, now or datetime.now(UTC))
+        reply = respond(event, table, now or datetime.now(UTC), partition_key)
     except (BotoCoreError, ClientError) as exc:
         # DynamoDB unreachable, throttled or misconfigured. Anything else is a
         # bug and is left to raise, so Lambda counts it as a failed invocation.
@@ -196,9 +203,13 @@ def default_table() -> Any:
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    """Lambda entry point: realtime_recommendation_pipeline.api.handler.handler."""
+    """Lambda entry point: realtime_recommendation_pipeline.api.handler.handler.
+
+    PARTITION_KEY picks which list to serve; the default is the 1-hour one.
+    """
     return handle(
         event,
         default_table(),
         lambda_request_id=getattr(context, "aws_request_id", None),
+        partition_key=os.environ.get("PARTITION_KEY", PARTITION_KEY),
     )

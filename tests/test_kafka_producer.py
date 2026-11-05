@@ -1,8 +1,10 @@
 import json
+import time
 from typing import Any
 
 from realtime_recommendation_pipeline.producer.kafka_producer import (
     kafka_timestamp_ms,
+    live_event,
     produce_events,
 )
 
@@ -11,12 +13,14 @@ class FakeProducer:
     """Records produced values instead of sending them to Kafka."""
 
     def __init__(self) -> None:
+        self.topics: list[str] = []
         self.values: list[bytes] = []
         self.timestamps: list[int] = []
 
     def produce(
         self, *, topic: str, key: bytes, value: bytes, timestamp: int, callback: Any
     ) -> None:
+        self.topics.append(topic)
         self.values.append(value)
         self.timestamps.append(timestamp)
         callback(None, None)
@@ -89,3 +93,46 @@ def test_malformed_event_time_falls_back_to_produced_at() -> None:
     }
 
     assert kafka_timestamp_ms(event) == 1_790_000_000_025
+
+
+def test_live_events_are_stamped_with_the_time_they_are_sent() -> None:
+    fake = FakeProducer()
+    before_ms = time.time_ns() // 1_000_000
+
+    produce_events(
+        bootstrap_servers="unused:9092",
+        rate=10_000,
+        duration=0.01,
+        producer_factory=lambda _config: fake,
+        live=True,
+    )
+
+    after_ms = time.time_ns() // 1_000_000
+    events = [json.loads(value) for value in fake.values]
+    assert len(events) == 100
+    for event, timestamp in zip(events, fake.timestamps, strict=True):
+        assert event["event_time"] == event["produced_at"] == timestamp
+        assert before_ms <= timestamp <= after_ms
+
+
+def test_live_mode_keeps_a_malformed_event_time() -> None:
+    event: dict[str, object] = {"event_time": "not-a-timestamp", "produced_at": 1}
+
+    assert live_event(event, 2_000) == {
+        "event_time": "not-a-timestamp",
+        "produced_at": 2_000,
+    }
+
+
+def test_events_go_to_the_given_topic() -> None:
+    fake = FakeProducer()
+
+    produce_events(
+        bootstrap_servers="unused:9092",
+        rate=10_000,
+        duration=0.01,
+        producer_factory=lambda _config: fake,
+        topic="viewing-events-demo",
+    )
+
+    assert set(fake.topics) == {"viewing-events-demo"}

@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from realtime_recommendation_pipeline.common.trending_table import window_item
+from realtime_recommendation_pipeline.common.trending_table import (
+    PARTITION_KEY,
+    window_item,
+)
 
 # A Kafka (topic, partition).
 Partition = tuple[str, int]
@@ -69,7 +72,9 @@ class WindowBuffer:
         self.next_offsets.clear()
 
 
-def window_to_item(window: Window) -> dict[str, Any]:
+def window_to_item(
+    window: Window, partition_key: str = PARTITION_KEY
+) -> dict[str, Any]:
     """The table item for a window, identical every time its rows are replayed.
 
     generated_at is when Flink emitted the list (the latest emitted_at), not
@@ -88,5 +93,8 @@ def window_to_item(window: Window) -> dict[str, Any]:
     emitted_at_ms = max(row["emitted_at"] for row in window.rows)
 
     return window_item(
-        window.window_end, ranked, datetime.fromtimestamp(emitted_at_ms / 1000, UTC)
+        window.window_end,
+        ranked,
+        datetime.fromtimestamp(emitted_at_ms / 1000, UTC),
+        partition_key,
     )

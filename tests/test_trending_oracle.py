@@ -28,7 +28,7 @@ from realtime_recommendation_pipeline.trending_oracle import (
 T0 = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
 
 # 10-minute windows every 5 minutes, top 3: small enough to reason about.
-SMALL = TrendingConfig(window_size_minutes=10, window_slide_minutes=5, top_n=3)
+SMALL = TrendingConfig(window_size_seconds=600, window_slide_seconds=300, top_n=3)
 
 # The job's watermarks come from the stream every 200 ms, and a bounded test
 # source finishes before the first one. A SQL watermark is emitted as soon as it
@@ -124,8 +124,8 @@ CASES: dict[str, tuple[list[dict[str, Any]], TrendingConfig]] = {
 def oracle(events: list[dict[str, Any]], config: TrendingConfig) -> list[TrendingRow]:
     return trending_oracle(
         events,
-        window_size_ms=config.window_size_minutes * 60_000,
-        window_slide_ms=config.window_slide_minutes * 60_000,
+        window_size_ms=config.window_size_seconds * 1_000,
+        window_slide_ms=config.window_slide_seconds * 1_000,
         top_n=config.top_n,
         max_out_of_orderness_ms=MAX_OUT_OF_ORDERNESS_S * 1_000,
     )

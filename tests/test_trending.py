@@ -14,8 +14,7 @@ from realtime_recommendation_pipeline.flink_jobs.event_time import (
 )
 from realtime_recommendation_pipeline.flink_jobs.trending import (
     TrendingConfig,
-    minutes_interval,
-    parse_trending_config,
+    seconds_interval,
     to_trending_json,
     trending_table,
 )
@@ -76,30 +75,23 @@ def run_trending(events: list[str], config: TrendingConfig) -> list[tuple]:
 
 def test_defaults_match_the_ticket() -> None:
     assert TrendingConfig() == TrendingConfig(
-        window_size_minutes=60, window_slide_minutes=5, top_n=20
-    )
-
-
-def test_settings_come_from_job_arguments() -> None:
-    config = parse_trending_config(["--window-size-minutes", "30", "--top-n", "5"])
-
-    assert config == TrendingConfig(
-        window_size_minutes=30, window_slide_minutes=5, top_n=5
+        window_size_seconds=3600, window_slide_seconds=300, top_n=20
     )
 
 
 @pytest.mark.parametrize(
     "settings",
-    [{"window_slide_minutes": 7}, {"window_size_minutes": 0}, {"top_n": 0}],
+    [{"window_slide_seconds": 7}, {"window_size_seconds": 0}, {"top_n": 0}],
 )
 def test_invalid_settings_are_rejected(settings: dict[str, int]) -> None:
     with pytest.raises(ValueError):
         TrendingConfig(**settings)
 
 
-def test_minutes_interval_handles_more_than_99_minutes() -> None:
-    assert minutes_interval(5) == "INTERVAL '0:05' HOUR TO MINUTE"
-    assert minutes_interval(120) == "INTERVAL '2:00' HOUR TO MINUTE"
+def test_seconds_interval_handles_more_than_99_seconds() -> None:
+    assert seconds_interval(10) == "INTERVAL '0:00:10' HOUR TO SECOND"
+    assert seconds_interval(120) == "INTERVAL '0:02:00' HOUR TO SECOND"
+    assert seconds_interval(3600) == "INTERVAL '1:00:00' HOUR TO SECOND"
 
 
 def test_trending_json_has_the_ticket_fields() -> None:
@@ -138,7 +130,7 @@ def test_ranks_distinct_viewers_per_sliding_window() -> None:
         make_event(430, "user-8", "prog-e", "heartbeat"),
         make_event(440, "user-9", "prog-e", "heartbeat"),
     ]
-    config = TrendingConfig(window_size_minutes=10, window_slide_minutes=5, top_n=2)
+    config = TrendingConfig(window_size_seconds=600, window_slide_seconds=300, top_n=2)
 
     rows = run_trending(events, config)
 

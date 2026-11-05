@@ -24,22 +24,19 @@ from realtime_recommendation_pipeline.flink_jobs.event_time import (
     to_events_table,
     viewing_event_watermarks,
 )
+from realtime_recommendation_pipeline.flink_jobs.job_config import parse_job_config
 from realtime_recommendation_pipeline.flink_jobs.reliability import (
     TRANSACTION_TIMEOUT_MS,
     job_settings,
     to_flink_configuration,
 )
 from realtime_recommendation_pipeline.flink_jobs.trending import (
-    parse_trending_config,
     to_trending_json,
     trending_table,
 )
 from realtime_recommendation_pipeline.flink_jobs.validation import validate_event
 
 BOOTSTRAP_SERVERS = "kafka:29092"
-SOURCE_TOPIC = "viewing-events"
-DLQ_TOPIC = "viewing-events-dlq"
-TRENDING_TOPIC = "trending-results"
 
 # One shared tag: the function emits to it and get_side_output() reads it.
 DLQ_TAG = OutputTag("dead-letters", Types.STRING())
@@ -91,7 +88,7 @@ def build_kafka_sink(topic: str, *, exactly_once: bool = False) -> KafkaSink:
 
 
 def main() -> None:
-    config = parse_trending_config()
+    job = parse_job_config()
     env = StreamExecutionEnvironment.get_execution_environment(
         to_flink_configuration(job_settings())
     )
@@ -100,7 +97,7 @@ def main() -> None:
     source = (
         KafkaSource.builder()
         .set_bootstrap_servers(BOOTSTRAP_SERVERS)
-        .set_topics(SOURCE_TOPIC)
+        .set_topics(job.source_topic)
         .set_group_id("flink-validate")
         .set_starting_offsets(KafkaOffsetsInitializer.earliest())
         .set_value_only_deserializer(SimpleStringSchema())
@@ -124,7 +121,7 @@ def main() -> None:
 
     dead_letters = valid_events.get_side_output(DLQ_TAG)
     (
-        dead_letters.sink_to(build_kafka_sink(DLQ_TOPIC))
+        dead_letters.sink_to(build_kafka_sink(job.dlq_topic))
         .name("viewing-events-dlq-sink")
         .uid("viewing-events-dlq-sink")
     )
@@ -137,13 +134,13 @@ def main() -> None:
     events_table = to_events_table(t_env, unique_events)
     events_table.print_schema()
 
-    trending = trending_table(t_env, events_table, config)
+    trending = trending_table(t_env, events_table, job.trending)
 
     (
         t_env.to_data_stream(trending)
         .map(to_trending_json, output_type=Types.STRING())
         .name("to-trending-json")
-        .sink_to(build_kafka_sink(TRENDING_TOPIC, exactly_once=True))
+        .sink_to(build_kafka_sink(job.trending_topic, exactly_once=True))
         .name("trending-results-sink")
         .uid("trending-results-sink")
     )

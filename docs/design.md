@@ -71,7 +71,7 @@ Windows use `event_time`, the moment the viewer's action happened, not the time 
 ### Trending results
 
 - **Eligibility and score:** only `play_start` and `heartbeat` events count, since they mean someone is watching. A programme's score is `COUNT(DISTINCT user_id)` in the window, so one viewer sending many heartbeats still counts once.
-- **Windows:** Flink SQL `HOP` windows, 60 minutes long, sliding every 5 minutes. Both are job arguments (`--window-size-minutes`, `--window-slide-minutes`, `--top-n`); the size must be a whole multiple of the slide.
+- **Windows:** Flink SQL `HOP` windows, 60 minutes long, sliding every 5 minutes. Both are job arguments in seconds (`--window-size-seconds`, `--window-slide-seconds`, and `--top-n`); the size must be a whole multiple of the slide. The SQL writes them as `INTERVAL 'H:MM:SS' HOUR TO SECOND`, because a plain `SECOND` interval only allows two digits. The job's topics are arguments too (`--source-topic`, `--trending-topic`, `--dlq-topic`), which is how the demo runs it on its own topics.
 - **Ranking:** Window Top-N with `ROW_NUMBER() OVER (PARTITION BY window_start, window_end ORDER BY score DESC, programme_id)`, keeping ranks 1 to 20. Each window emits its list once, when the watermark passes `window_end`.
 - **Output:** one JSON message per ranked programme on `trending-results`:
 
@@ -153,6 +153,17 @@ The job sets all of this itself (`flink_jobs/reliability.py`), so it travels wit
 - **Configuration:** `TABLE_NAME` (default `trending`) and, locally, `DYNAMODB_ENDPOINT_URL`. The DynamoDB resource is created once per Lambda container and reused across requests. Its client gives up quickly, with a 1 s connect timeout, a 2 s read timeout and 2 tries, instead of boto3's default 60 s read timeout, so a request fails within about 7 seconds and the Lambda timeout must be longer than that.
 - **Dependencies:** the handler imports only boto3, which the Lambda Python runtime includes, and nothing from Kafka, Flink or pydantic. A test checks this, so the function can be deployed without bundling the pipeline's other dependencies.
 - **Testing:** unit tests call the handler with moto, on a table created from `infra/dynamodb/trending-table.json`, using an API Gateway HTTP API (payload 2.0) event fixture, `tests/fixtures/http_api_get_trending.json`. `make api-local LIMIT=5` builds the same kind of event and calls the handler against DynamoDB Local.
+
+### End-to-end demo
+
+`make demo` runs every part of the pipeline on the local stack and prints the trending list the API returns. On a clean clone, `make install && make demo` is all it takes.
+
+- **Steps:** `make up`, then `tools/demo.py`. It waits until Kafka, Flink and DynamoDB Local answer real requests (up to 5 minutes on a first start), rather than relying on Docker health checks, which start a JVM each time and can time out on a busy laptop. Then it does what `make topics` and `make db-init` do for its own topics and table: it creates the table if it is missing and creates empty demo topics. It submits the Flink job, starts the results writer, produces live events for 2 minutes and reports each window as it reaches DynamoDB. Finally it calls the Lambda handler for `GET /trending?limit=10`. At the end, or on Ctrl-C, it stops its job with a savepoint.
+- **Short, live windows:** the job runs with `--window-size-seconds 120 --window-slide-seconds 10`, and the producer runs with `--live`, which stamps each event with the time it is sent. Generated event times start on a fixed date and run about 500 times faster than real time at 500 events a second, so without `--live` 2-minute windows would each cover a fraction of a second of producing. With it, windows follow the wall clock and the first list should appear in under a minute.
+- **Kept apart from the 1-hour pipeline:** the demo has its own topics (`viewing-events-demo`, `trending-results-demo`, `viewing-events-dlq-demo`, `trending-writer-dlq-demo`), deleted and created empty on every run, a new writer consumer group each run, and its own partition key, `TRENDING#2m`, in the same table. The exactly-once sink's transactional ID prefix includes the topic, so the demo job can run beside the 1-hour job without fencing its transactions. The 1-hour job's topics, offsets and `TRENDING#1h` items are never touched.
+- **Agreed time:** the first window must reach DynamoDB within 90 seconds of the first event. By construction it takes about 50: the first window ends within 10 s, fires once the watermark (newest event time minus 30 s) passes its end, and becomes visible to `read_committed` readers at the next checkpoint, at most 10 s later. `make test-e2e` runs the demo for 60 seconds on the running stack and asserts this.
+- **Rate:** 50 events a second. Validation and deduplication run as Python functions; in the RP-19 restart test the job worked through about 110 events a second while sharing the laptop with a second stack. If the producer outpaces the job, the watermark falls behind the wall clock and windows fire late.
+- **Memory:** the stack needs most of a 4 GB Docker VM (Kafka, the Flink JobManager and TaskManager, and DynamoDB Local), so run one stack at a time. Two stacks got containers killed for running out of memory.
 
 ### Deduplication
 

@@ -27,6 +27,7 @@ from confluent_kafka import (
 
 from realtime_recommendation_pipeline.common.kafka import downstream_consumer_config
 from realtime_recommendation_pipeline.common.trending_table import (
+    PARTITION_KEY,
     TIME_FORMAT,
     dynamodb_resource,
     put_window,
@@ -103,6 +104,7 @@ class ResultsWriter:
         idle_flush_s: float = 2.0,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        partition_key: str = PARTITION_KEY,
     ) -> None:
         self.consumer = consumer
         self.table = table
@@ -111,6 +113,7 @@ class ResultsWriter:
         self.idle_flush_s = idle_flush_s
         self.clock = clock
         self.sleep = sleep
+        self.partition_key = partition_key
         self.buffer = WindowBuffer()
         self.last_message_at = clock()
 
@@ -141,7 +144,7 @@ class ResultsWriter:
 
     def flush(self, window: Window) -> None:
         """Write the window's item, or dead-letter it, and only then commit."""
-        item = window_to_item(window)
+        item = window_to_item(window, self.partition_key)
         failure = write_with_retry(
             lambda: put_window(self.table, item), self.retry, sleep=self.sleep
         )
@@ -189,6 +192,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--bootstrap-servers", default="localhost:9092")
     parser.add_argument("--endpoint-url", default="http://localhost:8001")
     parser.add_argument("--table", default="trending")
+    parser.add_argument("--topic", default=TRENDING_TOPIC)
+    parser.add_argument("--dlq-topic", default=DLQ_TOPIC)
+    parser.add_argument("--partition-key", default=PARTITION_KEY)
     parser.add_argument("--group-id", default=GROUP_ID)
     parser.add_argument("--instance-id", default=INSTANCE_ID)
     parser.add_argument("--idle-flush-seconds", type=float, default=2.0)
@@ -216,15 +222,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     writer = ResultsWriter(
         consumer,
         table,
-        KafkaDeadLetters(producer),
+        KafkaDeadLetters(producer, args.dlq_topic),
         RetryPolicy(max_attempts=args.max_attempts),
         idle_flush_s=args.idle_flush_seconds,
+        partition_key=args.partition_key,
     )
 
     # Rows buffered for a partition this writer loses were never committed, so
     # whichever consumer gets the partition next reads them again.
     consumer.subscribe(
-        [TRENDING_TOPIC], on_revoke=lambda _consumer, _partitions: writer.buffer.clear()
+        [args.topic], on_revoke=lambda _consumer, _partitions: writer.buffer.clear()
     )
 
     stop_requested = False
@@ -236,7 +243,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
 
-    logger.info("Writing %s to table %s", TRENDING_TOPIC, args.table)
+    logger.info("Writing %s to table %s", args.topic, args.table)
     try:
         writer.run(lambda: stop_requested)
     finally:

@@ -13,8 +13,11 @@ JOB_ARGS ?=
 SAVEPOINT ?=
 DYNAMODB_ENDPOINT ?= http://localhost:8001
 LIMIT ?= 10
+KAFKA_BOOTSTRAP ?= localhost:9092
+FLINK_URL ?= http://localhost:8081
+DEMO_DURATION ?= 120
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e
 
 ## Show all available targets and their descriptions.
 help:
@@ -44,7 +47,7 @@ typecheck:
 
 ## Run automated tests and generate terminal and XML coverage reports.
 test:
-	poetry run pytest -m "not integration and not slow" --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
+	poetry run pytest -m "not integration and not slow and not e2e" --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
 
 ## Run the slow tests that start a local Flink mini-cluster (needs Java).
 test-flink:
@@ -138,3 +141,16 @@ api-local:
 	poetry run python -m realtime_recommendation_pipeline.tools.api_local \
 		--endpoint-url $(DYNAMODB_ENDPOINT) \
 		--limit $(LIMIT)
+
+## Run the whole pipeline on demo topics with 2-minute windows and print the trending list.
+demo: up
+	poetry run python -m realtime_recommendation_pipeline.tools.demo \
+		--bootstrap-servers $(KAFKA_BOOTSTRAP) \
+		--flink-url $(FLINK_URL) \
+		--endpoint-url $(DYNAMODB_ENDPOINT) \
+		--duration $(DEMO_DURATION)
+
+## End-to-end test on the local stack: demo results reach DynamoDB in the agreed time.
+test-e2e: up
+	KAFKA_BOOTSTRAP=$(KAFKA_BOOTSTRAP) FLINK_URL=$(FLINK_URL) \
+		DYNAMODB_ENDPOINT=$(DYNAMODB_ENDPOINT) poetry run pytest -m e2e -s

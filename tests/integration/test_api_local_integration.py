@@ -41,6 +41,7 @@ def restore_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # does; monkeypatch puts them back afterwards.
     monkeypatch.setenv("DYNAMODB_ENDPOINT_URL", "")
     monkeypatch.setenv("TABLE_NAME", "")
+    monkeypatch.setenv("PARTITION_KEY", "")
     yield
     default_table.cache_clear()
 
