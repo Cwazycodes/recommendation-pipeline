@@ -68,7 +68,7 @@ def write_with_retry(
     """Run write, retrying retryable errors. None on success, else the failure.
 
     Errors other than ClientError, such as a refused connection, are not
-    caught: the writer stops without committing, and a restart retries.
+    caught here: ResultsWriter waits those out without committing.
     """
     attempt = 1
     while True:

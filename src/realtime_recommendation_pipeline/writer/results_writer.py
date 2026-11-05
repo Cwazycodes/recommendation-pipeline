@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from botocore.config import Config
+from botocore.exceptions import ConnectionError as BotoConnectionError
+from botocore.exceptions import HTTPClientError
 from confluent_kafka import (
     Consumer,
     KafkaError,
@@ -32,7 +34,11 @@ from realtime_recommendation_pipeline.common.trending_table import (
     dynamodb_resource,
     put_window,
 )
-from realtime_recommendation_pipeline.writer.retry import RetryPolicy, write_with_retry
+from realtime_recommendation_pipeline.writer.retry import (
+    RetryPolicy,
+    WriteFailure,
+    write_with_retry,
+)
 from realtime_recommendation_pipeline.writer.windows import (
     Window,
     WindowBuffer,
@@ -50,6 +56,15 @@ INSTANCE_ID = "results-writer-1"
 # not retry underneath it.
 NO_SDK_RETRIES = Config(retries={"total_max_attempts": 1})
 
+# DynamoDB cannot be reached at all: refused or timed-out connections.
+UNREACHABLE = (BotoConnectionError, HTTPClientError)
+
+# While DynamoDB is unreachable the writer waits for as long as it takes: 1 s, 2 s, 4 s ... up to 30 s between tries, with jitter. max_attempts is not used here.
+OUTAGE_BACKOFF = RetryPolicy(base_delay_s=1.0, max_delay_s=30.0)
+
+# The writer does not poll Kafka while it waits out an outage. Heartbeats keep it in the group, but without a poll for max.poll.interval.ms (5 minutes by default) librdkafka leaves the group, and the next commit would fail.
+MAX_POLL_INTERVAL_MS = 30 * 60 * 1000
+
 
 def writer_consumer_config(
     bootstrap_servers: str, group_id: str = GROUP_ID, instance_id: str = INSTANCE_ID
@@ -63,6 +78,7 @@ def writer_consumer_config(
     """
     config = downstream_consumer_config(bootstrap_servers, group_id)
     config["group.instance.id"] = instance_id
+    config["max.poll.interval.ms"] = str(MAX_POLL_INTERVAL_MS)
 
     return config
 
@@ -105,6 +121,7 @@ class ResultsWriter:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         partition_key: str = PARTITION_KEY,
+        outage_backoff: RetryPolicy = OUTAGE_BACKOFF,
     ) -> None:
         self.consumer = consumer
         self.table = table
@@ -114,6 +131,7 @@ class ResultsWriter:
         self.clock = clock
         self.sleep = sleep
         self.partition_key = partition_key
+        self.outage_backoff = outage_backoff
         self.buffer = WindowBuffer()
         self.last_message_at = clock()
 
@@ -145,9 +163,7 @@ class ResultsWriter:
     def flush(self, window: Window) -> None:
         """Write the window's item, or dead-letter it, and only then commit."""
         item = window_to_item(window, self.partition_key)
-        failure = write_with_retry(
-            lambda: put_window(self.table, item), self.retry, sleep=self.sleep
-        )
+        failure = self.write_when_reachable(item)
 
         if failure is None:
             logger.info(
@@ -171,6 +187,29 @@ class ResultsWriter:
             )
 
         self.commit()
+
+    def write_when_reachable(self, item: dict[str, Any]) -> WriteFailure | None:
+        """Write with retries, first waiting out any time DynamoDB is unreachable.
+
+        Nothing is committed while it waits, so a crash during an outage loses
+        nothing, and an outage never sends windows to the DLQ.
+        """
+        outage_tries = 0
+        while True:
+            try:
+                return write_with_retry(
+                    lambda: put_window(self.table, item), self.retry, sleep=self.sleep
+                )
+            except UNREACHABLE as exc:
+                outage_tries += 1
+                delay = self.outage_backoff.delay(outage_tries)
+                logger.warning(
+                    "DynamoDB unreachable (%s); not committing, try %d in %.1f s",
+                    exc,
+                    outage_tries + 1,
+                    delay,
+                )
+                self.sleep(delay)
 
     def commit(self) -> None:
         """Commit every offset before the window still being read."""
