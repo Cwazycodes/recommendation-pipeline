@@ -8,6 +8,7 @@ from realtime_recommendation_pipeline.settings import (
     FlinkSettings,
     KafkaSettings,
     LogSettings,
+    MetricsSettings,
     SettingsError,
     environment,
     load,
@@ -15,7 +16,13 @@ from realtime_recommendation_pipeline.settings import (
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_EXAMPLE = ROOT / ".env.example"
-SETTINGS = (KafkaSettings, FlinkSettings, DynamoDBSettings, LogSettings)
+SETTINGS = (
+    KafkaSettings,
+    FlinkSettings,
+    DynamoDBSettings,
+    MetricsSettings,
+    LogSettings,
+)
 
 
 def variable_names(settings_class: type[BaseSettings]) -> set[str]:

@@ -74,6 +74,16 @@ class DynamoDBSettings(BaseSettings):
         return None if value == "" else value
 
 
+class MetricsSettings(BaseSettings):
+    """Prometheus, and the address the results writer serves its metrics on."""
+
+    model_config = settings_config("METRICS_")
+
+    prometheus_url: str
+    writer_host: str
+    writer_port: int
+
+
 class LogSettings(BaseSettings):
     model_config = settings_config()
 

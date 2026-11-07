@@ -72,14 +72,22 @@ class WindowBuffer:
         self.next_offsets.clear()
 
 
+def emitted_at(window: Window) -> datetime:
+    """When Flink emitted the window's list: the latest emitted_at of its rows."""
+    return datetime.fromtimestamp(
+        max(row["emitted_at"] for row in window.rows) / 1000, UTC
+    )
+
+
 def window_to_item(
     window: Window, partition_key: str = PARTITION_KEY
 ) -> dict[str, Any]:
     """The table item for a window, identical every time its rows are replayed.
 
     generated_at is when Flink emitted the list (the latest emitted_at), not
-    when the writer ran, so writing a window again writes the same data. If a
-    rank appears twice, the later row wins, so an item never repeats a rank.
+    when the writer ran, so writing a window again writes the same data. The
+    writer adds written_at, its own clock, as it writes. If a rank appears
+    twice, the later row wins, so an item never repeats a rank.
     """
     by_rank = {row["rank"]: row for row in window.rows}
     ranked = [
@@ -90,11 +98,5 @@ def window_to_item(
         }
         for rank in sorted(by_rank)
     ]
-    emitted_at_ms = max(row["emitted_at"] for row in window.rows)
 
-    return window_item(
-        window.window_end,
-        ranked,
-        datetime.fromtimestamp(emitted_at_ms / 1000, UTC),
-        partition_key,
-    )
+    return window_item(window.window_end, ranked, emitted_at(window), partition_key)

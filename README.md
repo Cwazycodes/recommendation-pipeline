@@ -16,6 +16,6 @@ make install
 make demo
 ```
 
-`make demo` starts Kafka, Flink and DynamoDB Local in Docker and runs the whole pipeline for two minutes. Live viewing events go into Kafka, and Flink ranks programmes by distinct viewers in 2-minute windows sliding every 10 seconds. The results writer copies each window into DynamoDB, and the read API's Lambda handler prints the latest trending list. The first run also builds the Flink image, which takes a few minutes.
+`make demo` starts Kafka, Flink, DynamoDB Local and Prometheus (with kafka-exporter) in Docker and runs the whole pipeline for two minutes. Live viewing events go into Kafka, and Flink ranks programmes by distinct viewers in 2-minute windows sliding every 10 seconds. The results writer copies each window into DynamoDB, and the read API's Lambda handler prints the latest trending list. The first run also builds the Flink image, which takes a few minutes.
 
-`make install` also copies `.env.example` to `.env`, which holds every host, port, topic and table name; change `.env` to point the pipeline somewhere else. It needs ports 9092, 8080, 8081 and 8001 to be free. `make help` lists every command, and [docs/design.md](docs/design.md) explains the design.
+`make install` also copies `.env.example` to `.env`, which holds every host, port, topic and table name; change `.env` to point the pipeline somewhere else. It needs ports 9092, 8080, 8081, 8001, 9090 and 9464 to be free. `make metrics` prints throughput, consumer lag and latency percentiles for a live run (docs/metrics.md).

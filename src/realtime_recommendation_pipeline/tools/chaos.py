@@ -392,6 +392,7 @@ class WriterProcess:
             **os.environ,
             **environment(kafka),
             **environment(dynamo),
+            **environment(settings.metrics),
             "PYTHONUNBUFFERED": "1",
         }
         self.written = 0

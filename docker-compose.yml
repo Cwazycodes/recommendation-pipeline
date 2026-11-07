@@ -81,6 +81,8 @@ services:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
     volumes:
       - flink-checkpoints:/opt/flink/checkpoints
       - ./src:/opt/flink/src:ro
@@ -98,8 +100,36 @@ services:
       - "8001:8000"
     volumes:
       - dynamodb_data:/home/dynamodblocal/data
+  # Kafka's offsets for Prometheus: how far behind the end of each topic each
+  # consumer group is (docs/metrics.md, "Consumer lag").
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    container_name: recommendation-kafka-exporter
+    command: --kafka.server=kafka:29092
+    # It exits when Kafka is not up yet, so Docker starts it again.
+    restart: unless-stopped
+    depends_on:
+      - kafka
 
+  # Scrapes Flink, Kafka's offsets and the results writer (infra/prometheus/prometheus.yml).
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: recommendation-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # A day of samples is plenty for local runs.
+      - --storage.tsdb.retention.time=1d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    # The writer runs on the host. Docker Desktop provides host.docker.internal;
+    # this makes it work on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 volumes:
   kafka_data:
   flink-checkpoints:
   dynamodb_data:
+  prometheus_data:
