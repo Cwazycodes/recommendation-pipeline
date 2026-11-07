@@ -1,7 +1,6 @@
 """The whole pipeline on the running Compose stack (make test-e2e)."""
 
 import json
-import os
 
 import pytest
 
@@ -15,13 +14,9 @@ pytestmark = pytest.mark.e2e
 
 
 def test_trending_results_reach_dynamodb_within_the_agreed_time() -> None:
-    settings = DemoSettings(
-        bootstrap_servers=os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092"),
-        flink_url=os.environ.get("FLINK_URL", "http://localhost:8081"),
-        dynamodb_endpoint=os.environ.get("DYNAMODB_ENDPOINT", "http://localhost:8001"),
-        # Long enough for the watermark to pass the first windows.
-        duration_s=60,
-    )
+    # The local stack's addresses come from .env, as for make demo. Sixty
+    # seconds is long enough for the watermark to pass the first windows.
+    settings = DemoSettings.from_env(duration_s=60)
 
     result = run_demo(settings)
 

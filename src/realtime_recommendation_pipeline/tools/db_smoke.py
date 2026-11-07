@@ -1,4 +1,4 @@
-"""Write two sample windows to the 'trending' table and read the latest back.
+"""Write two sample windows to the trending table and read the latest back.
 
 Uses its own partition key, so the samples never show up as the real latest
 list, and deletes them afterwards.
@@ -18,6 +18,7 @@ from realtime_recommendation_pipeline.common.trending_table import (
     put_window,
     window_item,
 )
+from realtime_recommendation_pipeline.settings import DynamoDBSettings, load
 
 SMOKE_PARTITION_KEY = "SMOKE#1h"
 
@@ -30,11 +31,10 @@ SAMPLE_ITEMS = [
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint-url", default="http://localhost:8001")
-    parser.add_argument("--table", default="trending")
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
 
-    table = dynamodb_resource(args.endpoint_url).Table(args.table)
+    dynamo = load(DynamoDBSettings)
+    table = dynamodb_resource(dynamo.endpoint_url).Table(dynamo.table)
     now = datetime.now(UTC)
 
     older = window_item(

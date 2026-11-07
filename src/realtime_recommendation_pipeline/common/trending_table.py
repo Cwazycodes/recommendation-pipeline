@@ -1,4 +1,4 @@
-"""The 'trending' DynamoDB table: one item per window, newest last.
+"""The trending DynamoDB table: one item per window, newest last.
 
 The API's only question is "what is trending now?", which is the item with
 the highest window_end under one partition key. A single Query that reads the

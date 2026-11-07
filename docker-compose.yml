@@ -54,6 +54,8 @@ services:
       dockerfile: Dockerfile.flink
     image: recommendation-pipeline/flink:1.20.1
     command: jobmanager
+    # The job reads its FLINK_* and KAFKA_* settings from the environment.
+    env_file: .env
     ports:
       - "8081:8081"
     environment:
@@ -72,6 +74,7 @@ services:
   flink-taskmanager:
     image: recommendation-pipeline/flink:1.20.1
     command: taskmanager
+    env_file: .env
     # If the TaskManager dies, bring it back so the job's restart strategy has somewhere to run (see docs/design.md, "Checkpoints, restarts...").
     restart: unless-stopped
     environment:

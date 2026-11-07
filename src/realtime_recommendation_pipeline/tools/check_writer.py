@@ -1,4 +1,4 @@
-"""Compare the 'trending' table with the windows on trending-results.
+"""Compare the trending table with the windows on the trending topic.
 
 The table should hold what one uninterrupted pass over the topic would write:
 one item per window, with that window's latest ranked list and no repeated
@@ -23,10 +23,12 @@ from realtime_recommendation_pipeline.common.trending_table import (
     dynamodb_resource,
     plain,
 )
-from realtime_recommendation_pipeline.tools.check_trending import (
-    TRENDING_TOPIC,
-    read_rows,
+from realtime_recommendation_pipeline.settings import (
+    DynamoDBSettings,
+    KafkaSettings,
+    load,
 )
+from realtime_recommendation_pipeline.tools.check_trending import read_rows
 from realtime_recommendation_pipeline.writer.windows import (
     WindowBuffer,
     window_to_item,
@@ -41,7 +43,8 @@ def expected_items(
     items = {}
 
     for offset, row in enumerate(rows):
-        complete = buffer.add((TRENDING_TOPIC, 0), offset, row)
+        # Offsets only matter for commits, so any partition label will do.
+        complete = buffer.add(("rows", 0), offset, row)
         if complete is not None:
             items[complete.window_end] = window_to_item(complete, partition_key)
 
@@ -99,23 +102,24 @@ def compare(
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bootstrap-servers", default="localhost:9092")
-    parser.add_argument("--endpoint-url", default="http://localhost:8001")
-    parser.add_argument("--table", default="trending")
     parser.add_argument("--idle-seconds", type=float, default=10.0)
     args = parser.parse_args(argv)
 
+    kafka = load(KafkaSettings)
+    dynamo = load(DynamoDBSettings)
     config = downstream_consumer_config(
-        args.bootstrap_servers, group_id=f"check-writer-{uuid.uuid4()}"
+        kafka.bootstrap_servers, group_id=f"check-writer-{uuid.uuid4()}"
     )
-    expected = expected_items(read_rows(config, TRENDING_TOPIC, args.idle_seconds))
-    actual = table_items(dynamodb_resource(args.endpoint_url).Table(args.table))
+    rows = read_rows(config, kafka.trending_topic, args.idle_seconds)
+    expected = expected_items(rows, dynamo.partition_key)
+    table = dynamodb_resource(dynamo.endpoint_url).Table(dynamo.table)
+    actual = table_items(table, dynamo.partition_key)
 
     now_s = time.time()
     live = sum(1 for item in expected.values() if item["ttl"] > now_s)
     print(
-        f"{len(expected)} windows on {TRENDING_TOPIC} ({live} not expired), "
-        f"{len(actual)} items in table {args.table}"
+        f"{len(expected)} windows on {kafka.trending_topic} ({live} not expired), "
+        f"{len(actual)} items in table {dynamo.table}"
     )
 
     problems = compare(expected, actual, now_s)

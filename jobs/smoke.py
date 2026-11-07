@@ -6,16 +6,20 @@ from pyflink.datastream.connectors.kafka import (
     KafkaSource,
 )
 
+from realtime_recommendation_pipeline.settings import FlinkSettings, KafkaSettings, load
+
 
 def main() -> None:
+    kafka = load(KafkaSettings)
+    flink = load(FlinkSettings)
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)
 
     source = (
         KafkaSource.builder()
-        .set_bootstrap_servers("kafka:29092")
-        .set_topics("viewing-events")
-        .set_group_id("flink-smoke")
+        .set_bootstrap_servers(flink.kafka_bootstrap_servers)
+        .set_topics(kafka.events_topic)
+        .set_group_id(f"{flink.source_group_id}-smoke")
         .set_starting_offsets(KafkaOffsetsInitializer.earliest())
         .set_value_only_deserializer(SimpleStringSchema())
         .build()

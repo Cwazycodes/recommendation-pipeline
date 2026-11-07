@@ -1,4 +1,4 @@
-"""Write each trending-results window to the DynamoDB 'trending' table.
+"""Write each window on the trending topic to the DynamoDB trending table.
 
 Effectively once: a window's offsets are committed only after its item is
 written (or dead-lettered), so a crash replays at most the window being read,
@@ -28,11 +28,18 @@ from confluent_kafka import (
 )
 
 from realtime_recommendation_pipeline.common.kafka import downstream_consumer_config
+from realtime_recommendation_pipeline.common.logs import configure_logging
 from realtime_recommendation_pipeline.common.trending_table import (
     PARTITION_KEY,
     TIME_FORMAT,
     dynamodb_resource,
     put_window,
+)
+from realtime_recommendation_pipeline.settings import (
+    DynamoDBSettings,
+    KafkaSettings,
+    LogSettings,
+    load,
 )
 from realtime_recommendation_pipeline.writer.retry import (
     RetryPolicy,
@@ -46,11 +53,6 @@ from realtime_recommendation_pipeline.writer.windows import (
 )
 
 logger = logging.getLogger(__name__)
-
-TRENDING_TOPIC = "trending-results"
-DLQ_TOPIC = "trending-writer-dlq"
-GROUP_ID = "results-writer"
-INSTANCE_ID = "results-writer-1"
 
 # The writer retries with its own backoff and counts the tries, so boto3 must
 # not retry underneath it.
@@ -67,7 +69,7 @@ MAX_POLL_INTERVAL_MS = 30 * 60 * 1000
 
 
 def writer_consumer_config(
-    bootstrap_servers: str, group_id: str = GROUP_ID, instance_id: str = INSTANCE_ID
+    bootstrap_servers: str, group_id: str, instance_id: str
 ) -> dict[str, str]:
     """read_committed, manual-commit consumer settings, as a static member.
 
@@ -86,7 +88,7 @@ def writer_consumer_config(
 class KafkaDeadLetters:
     """Sends windows that could not be written to the writer DLQ topic."""
 
-    def __init__(self, producer: Any, topic: str = DLQ_TOPIC) -> None:
+    def __init__(self, producer: Any, topic: str) -> None:
         self.producer = producer
         self.topic = topic
 
@@ -167,7 +169,12 @@ class ResultsWriter:
 
         if failure is None:
             logger.info(
-                "Wrote window %s (%d programmes)", window.window_end, len(item["items"])
+                "wrote window",
+                extra={
+                    "window_end": window.window_end,
+                    "programmes": len(item["items"]),
+                    "generated_at": item["generated_at"],
+                },
             )
         else:
             self.dead_letters.send(
@@ -180,10 +187,12 @@ class ResultsWriter:
                 }
             )
             logger.error(
-                "Dead-lettered window %s after %d tries: %s",
-                window.window_end,
-                failure.attempts,
-                failure.error,
+                "dead-lettered window",
+                extra={
+                    "window_end": window.window_end,
+                    "attempts": failure.attempts,
+                    "error": failure.error,
+                },
             )
 
         self.commit()
@@ -204,10 +213,13 @@ class ResultsWriter:
                 outage_tries += 1
                 delay = self.outage_backoff.delay(outage_tries)
                 logger.warning(
-                    "DynamoDB unreachable (%s); not committing, try %d in %.1f s",
-                    exc,
-                    outage_tries + 1,
-                    delay,
+                    "dynamodb unreachable, not committing",
+                    extra={
+                        "window_end": item["sk"],
+                        "next_try": outage_tries + 1,
+                        "retry_in_s": round(delay, 1),
+                        "error": str(exc),
+                    },
                 )
                 self.sleep(delay)
 
@@ -227,50 +239,45 @@ class ResultsWriter:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    """Hosts, topics, group and table come from the environment (settings.py)."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bootstrap-servers", default="localhost:9092")
-    parser.add_argument("--endpoint-url", default="http://localhost:8001")
-    parser.add_argument("--table", default="trending")
-    parser.add_argument("--topic", default=TRENDING_TOPIC)
-    parser.add_argument("--dlq-topic", default=DLQ_TOPIC)
-    parser.add_argument("--partition-key", default=PARTITION_KEY)
-    parser.add_argument("--group-id", default=GROUP_ID)
-    parser.add_argument("--instance-id", default=INSTANCE_ID)
     parser.add_argument("--idle-flush-seconds", type=float, default=2.0)
     parser.add_argument("--max-attempts", type=int, default=5)
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    kafka = load(KafkaSettings)
+    dynamo = load(DynamoDBSettings)
+    configure_logging("results-writer", load(LogSettings).log_level)
 
     consumer = Consumer(
-        writer_consumer_config(args.bootstrap_servers, args.group_id, args.instance_id)
+        writer_consumer_config(
+            kafka.bootstrap_servers, kafka.writer_group_id, kafka.writer_instance_id
+        )
     )
     producer = Producer(
         {
-            "bootstrap.servers": args.bootstrap_servers,
+            "bootstrap.servers": kafka.bootstrap_servers,
             "enable.idempotence": True,
             "acks": "all",
         }
     )
-    dynamodb = dynamodb_resource(args.endpoint_url, config=NO_SDK_RETRIES)
-    table = dynamodb.Table(args.table)
+    dynamodb = dynamodb_resource(dynamo.endpoint_url, config=NO_SDK_RETRIES)
+    table = dynamodb.Table(dynamo.table)
 
     writer = ResultsWriter(
         consumer,
         table,
-        KafkaDeadLetters(producer, args.dlq_topic),
+        KafkaDeadLetters(producer, kafka.writer_dlq_topic),
         RetryPolicy(max_attempts=args.max_attempts),
         idle_flush_s=args.idle_flush_seconds,
-        partition_key=args.partition_key,
+        partition_key=dynamo.partition_key,
     )
 
     # Rows buffered for a partition this writer loses were never committed, so
     # whichever consumer gets the partition next reads them again.
     consumer.subscribe(
-        [args.topic], on_revoke=lambda _consumer, _partitions: writer.buffer.clear()
+        [kafka.trending_topic],
+        on_revoke=lambda _consumer, _partitions: writer.buffer.clear(),
     )
 
     stop_requested = False
@@ -282,14 +289,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
 
-    logger.info("Writing %s to table %s", args.topic, args.table)
+    logger.info(
+        "writer started",
+        extra={
+            "topic": kafka.trending_topic,
+            "table": dynamo.table,
+            "partition_key": dynamo.partition_key,
+            "group_id": kafka.writer_group_id,
+        },
+    )
     try:
         writer.run(lambda: stop_requested)
     finally:
         # No commit here: a window that was only partly read is read again
         # from its first row on the next start.
         consumer.close()
-        logger.info("Stopped")
+        logger.info("writer stopped")
 
 
 if __name__ == "__main__":

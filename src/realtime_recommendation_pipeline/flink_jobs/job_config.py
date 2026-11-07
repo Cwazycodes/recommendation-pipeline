@@ -4,39 +4,42 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from realtime_recommendation_pipeline.flink_jobs.trending import TrendingConfig
+from realtime_recommendation_pipeline.settings import KafkaSettings
 
 
 @dataclass(frozen=True)
 class JobConfig:
     """The topics the job reads and writes, and its trending settings."""
 
-    trending: TrendingConfig = field(default_factory=TrendingConfig)
-    source_topic: str = "viewing-events"
-    trending_topic: str = "trending-results"
-    dlq_topic: str = "viewing-events-dlq"
+    trending: TrendingConfig
+    source_topic: str
+    trending_topic: str
+    dlq_topic: str
 
 
-def parse_job_config(argv: Sequence[str] | None = None) -> JobConfig:
-    """Read the job's settings from its arguments; each one has a default."""
-    defaults = JobConfig()
+def parse_job_config(
+    kafka: KafkaSettings, argv: Sequence[str] | None = None
+) -> JobConfig:
+    """Read the job's arguments. Topics default to the KAFKA_* settings."""
+    defaults = TrendingConfig()
     parser = argparse.ArgumentParser(
         description="Validate, deduplicate and rank viewing events."
     )
     parser.add_argument(
-        "--window-size-seconds", type=int, default=defaults.trending.window_size_seconds
+        "--window-size-seconds", type=int, default=defaults.window_size_seconds
     )
     parser.add_argument(
         "--window-slide-seconds",
         type=int,
-        default=defaults.trending.window_slide_seconds,
+        default=defaults.window_slide_seconds,
     )
-    parser.add_argument("--top-n", type=int, default=defaults.trending.top_n)
-    parser.add_argument("--source-topic", default=defaults.source_topic)
-    parser.add_argument("--trending-topic", default=defaults.trending_topic)
-    parser.add_argument("--dlq-topic", default=defaults.dlq_topic)
+    parser.add_argument("--top-n", type=int, default=defaults.top_n)
+    parser.add_argument("--source-topic", default=kafka.events_topic)
+    parser.add_argument("--trending-topic", default=kafka.trending_topic)
+    parser.add_argument("--dlq-topic", default=kafka.events_dlq_topic)
     args = parser.parse_args(argv)
 
     return JobConfig(

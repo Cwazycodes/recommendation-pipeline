@@ -11,12 +11,16 @@ MALFORMED_RATE ?= 0.0
 DUP_RATE ?= 0.0
 JOB_ARGS ?=
 SAVEPOINT ?=
-DYNAMODB_ENDPOINT ?= http://localhost:8001
 LIMIT ?= 10
-KAFKA_BOOTSTRAP ?= localhost:9092
-FLINK_URL ?= http://localhost:8081
 DEMO_DURATION ?= 120
 CHAOS_DRILLS ?= taskmanager kafka writer dynamodb
+
+# Every host, topic and table is in .env (documented in .env.example). The
+# Python tools and the Flink containers read it themselves, so make never
+# includes it and a variable set in the shell still wins. make install and
+# make up create it from .env.example if it is missing.
+.env:
+	cp .env.example .env
 
 .PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos
 
@@ -31,7 +35,7 @@ help:
 		}' $(MAKEFILE_LIST)
 
 ## Install project and default development dependencies.
-install:
+install: .env
 	poetry install --with flink
 
 ## Format Python code with Ruff.
@@ -44,7 +48,7 @@ lint:
 
 ## Run static type checking with mypy.
 typecheck:
-	poetry run mypy src
+	poetry run mypy src jobs
 
 ## Run automated tests and generate terminal and XML coverage reports.
 test:
@@ -66,7 +70,7 @@ generate:
 	poetry run python -m realtime_recommendation_pipeline.producer.generate
 
 ## Start the local Kafka stack.
-up:
+up: .env
 	docker compose up -d
 
 ## Stop the local Kafka stack.
@@ -77,9 +81,9 @@ down:
 down_delete:
 	docker compose down -v
 
-## Create the required Kafka topics.
+## Create the Kafka topics named in .env.
 topics:
-	./scripts/create-topics.sh
+	poetry run python -m realtime_recommendation_pipeline.tools.create_topics
 
 ## Follow logs from the Kafka containers.
 logs:
@@ -110,7 +114,7 @@ submit-job:
 stop-job:
 	@job_id=$$(docker compose exec -T flink-jobmanager flink list -r 2>/dev/null | awk -F ' : ' '/RUNNING/ {print $$2; exit}'); \
 	if [ -z "$$job_id" ]; then echo "No running job to stop."; exit 1; fi; \
-	docker compose exec -T flink-jobmanager flink stop --savepointPath file:///opt/flink/checkpoints/savepoints "$$job_id"
+	docker compose exec -T flink-jobmanager sh -c "flink stop --savepointPath \$$FLINK_CHECKPOINT_DIR/savepoints $$job_id"
 
 ## Check trending-results for gaps and duplicates, reading only committed rows.
 check-trending:
@@ -119,47 +123,35 @@ check-trending:
 ## Create the DynamoDB Local table from infra/dynamodb/trending-table.json.
 db-init:
 	poetry run python -m realtime_recommendation_pipeline.tools.db_init \
-		--endpoint-url $(DYNAMODB_ENDPOINT) \
 		--definition infra/dynamodb/trending-table.json
 
 ## Write sample windows to DynamoDB Local and read the latest back.
 db-smoke:
-	poetry run python -m realtime_recommendation_pipeline.tools.db_smoke \
-		--endpoint-url $(DYNAMODB_ENDPOINT)
+	poetry run python -m realtime_recommendation_pipeline.tools.db_smoke
 
 ## Write trending-results windows to DynamoDB Local (Ctrl-C stops it cleanly).
 writer:
-	poetry run python -m realtime_recommendation_pipeline.writer.results_writer \
-		--endpoint-url $(DYNAMODB_ENDPOINT)
+	poetry run python -m realtime_recommendation_pipeline.writer.results_writer
 
 ## Check the table holds one correct item per window on trending-results.
 check-writer:
-	poetry run python -m realtime_recommendation_pipeline.tools.check_writer \
-		--endpoint-url $(DYNAMODB_ENDPOINT)
+	poetry run python -m realtime_recommendation_pipeline.tools.check_writer
 
 ## Call the API's Lambda handler against DynamoDB Local (GET /trending?limit=LIMIT).
 api-local:
 	poetry run python -m realtime_recommendation_pipeline.tools.api_local \
-		--endpoint-url $(DYNAMODB_ENDPOINT) \
 		--limit $(LIMIT)
 
 ## Run the whole pipeline on demo topics with 2-minute windows and print the trending list.
 demo: up
 	poetry run python -m realtime_recommendation_pipeline.tools.demo \
-		--bootstrap-servers $(KAFKA_BOOTSTRAP) \
-		--flink-url $(FLINK_URL) \
-		--endpoint-url $(DYNAMODB_ENDPOINT) \
 		--duration $(DEMO_DURATION)
 
 ## End-to-end test on the local stack: demo results reach DynamoDB in the agreed time.
 test-e2e: up
-	KAFKA_BOOTSTRAP=$(KAFKA_BOOTSTRAP) FLINK_URL=$(FLINK_URL) \
-		DYNAMODB_ENDPOINT=$(DYNAMODB_ENDPOINT) poetry run pytest -m e2e -s
+	poetry run pytest -m e2e -s
 
 ## Run the failure drills on the local stack and record the results in docs/reliability.md.
 chaos: up
 	poetry run python -m realtime_recommendation_pipeline.tools.chaos \
-		--bootstrap-servers $(KAFKA_BOOTSTRAP) \
-		--flink-url $(FLINK_URL) \
-		--endpoint-url $(DYNAMODB_ENDPOINT) \
 		$(foreach drill,$(CHAOS_DRILLS),--drill $(drill))

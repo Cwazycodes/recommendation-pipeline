@@ -50,6 +50,7 @@ from realtime_recommendation_pipeline.flink_jobs.event_time import (
 from realtime_recommendation_pipeline.flink_jobs.trending import TrendingConfig
 from realtime_recommendation_pipeline.producer.generate import generate_events
 from realtime_recommendation_pipeline.producer.kafka_producer import produce_events
+from realtime_recommendation_pipeline.settings import environment
 from realtime_recommendation_pipeline.tools.check_trending import read_rows
 from realtime_recommendation_pipeline.tools.check_writer import (
     compare,
@@ -371,16 +372,28 @@ class WriterProcess:
 
     def __init__(self, settings: DemoSettings, group_id: str) -> None:
         self.command = [
-            sys.executable, "-m", "realtime_recommendation_pipeline.writer.results_writer",
-            "--bootstrap-servers", settings.bootstrap_servers,
-            "--endpoint-url", settings.dynamodb_endpoint,
-            "--topic", TRENDING_TOPIC,
-            "--dlq-topic", WRITER_DLQ_TOPIC,
-            "--partition-key", PARTITION_KEY,
-            "--group-id", group_id,
-            "--instance-id", group_id,
-            "--idle-flush-seconds", "1",
-        ]  # fmt: skip
+            sys.executable,
+            "-m",
+            "realtime_recommendation_pipeline.writer.results_writer",
+            "--idle-flush-seconds",
+            "1",
+        ]
+        # The writer reads its settings from the environment, like make writer.
+        kafka = settings.kafka.model_copy(
+            update={
+                "trending_topic": TRENDING_TOPIC,
+                "writer_dlq_topic": WRITER_DLQ_TOPIC,
+                "writer_group_id": group_id,
+                "writer_instance_id": group_id,
+            }
+        )
+        dynamo = settings.dynamo.model_copy(update={"partition_key": PARTITION_KEY})
+        self.env = {
+            **os.environ,
+            **environment(kafka),
+            **environment(dynamo),
+            "PYTHONUNBUFFERED": "1",
+        }
         self.written = 0
         self.unreachable = 0
         self.process: subprocess.Popen[str] | None = None
@@ -391,7 +404,7 @@ class WriterProcess:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env=self.env,
         )
         threading.Thread(
             target=self._read_log, args=(self.process,), daemon=True
@@ -400,9 +413,13 @@ class WriterProcess:
     def _read_log(self, process: subprocess.Popen[str]) -> None:
         assert process.stderr is not None
         for line in process.stderr:
-            if "Wrote window" in line:
+            try:
+                message = json.loads(line).get("message", "")
+            except ValueError:
+                continue
+            if message == "wrote window":
                 self.written += 1
-            elif "DynamoDB unreachable" in line:
+            elif message.startswith("dynamodb unreachable"):
                 self.unreachable += 1
 
     def kill(self) -> None:
@@ -495,7 +512,7 @@ def run_job_drill(
             )
     finally:
         try:
-            stop_job(settings.flink_url, job_id)
+            stop_job(settings.flink, job_id)
         except (OSError, DemoError) as exc:
             say(f"Could not stop the chaos job {job_id}: {exc}")
 
@@ -568,7 +585,7 @@ def kafka_drill(settings: DemoSettings, say: Say) -> DrillReport:
 
 def clear_partition(settings: DemoSettings) -> Any:
     """The table, without items left under PARTITION_KEY by earlier runs."""
-    table = dynamodb_resource(settings.dynamodb_endpoint).Table("trending")
+    table = dynamodb_resource(settings.dynamodb_endpoint).Table(settings.dynamo.table)
     with table.batch_writer() as batch:
         for window_end in table_items(table, PARTITION_KEY):
             batch.delete_item(Key={"pk": PARTITION_KEY, "sk": window_end})
@@ -768,18 +785,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--bootstrap-servers", default="localhost:9092")
-    parser.add_argument("--flink-url", default="http://localhost:8081")
-    parser.add_argument("--endpoint-url", default="http://localhost:8001")
     parser.add_argument("--drill", action="append", choices=list(DRILLS))
     args = parser.parse_args(argv)
 
     names = args.drill or list(DRILLS)
-    settings = DemoSettings(
-        bootstrap_servers=args.bootstrap_servers,
-        flink_url=args.flink_url,
-        dynamodb_endpoint=args.endpoint_url,
-    )
+    settings = DemoSettings.from_env()
 
     try:
         results = run_drills(settings, names)

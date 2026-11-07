@@ -40,6 +40,7 @@ def produce_with_fake(**kwargs: Any) -> list[dict[str, Any]]:
         rate=10_000,
         duration=0.1,
         producer_factory=lambda _config: fake,
+        topic="viewing-events",
         **kwargs,
     )
 
@@ -79,6 +80,7 @@ def test_records_are_stamped_with_event_time() -> None:
         rate=10_000,
         duration=0.1,
         producer_factory=lambda _config: fake,
+        topic="viewing-events",
     )
 
     events = [json.loads(value) for value in fake.values]
@@ -104,6 +106,7 @@ def test_live_events_are_stamped_with_the_time_they_are_sent() -> None:
         rate=10_000,
         duration=0.01,
         producer_factory=lambda _config: fake,
+        topic="viewing-events",
         live=True,
     )
 

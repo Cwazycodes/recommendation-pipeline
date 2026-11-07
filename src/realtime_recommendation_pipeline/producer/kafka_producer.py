@@ -8,11 +8,14 @@ import logging
 import signal
 import time
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from confluent_kafka import KafkaError, KafkaException, Producer
 
+from realtime_recommendation_pipeline.common.logs import configure_logging
 from realtime_recommendation_pipeline.producer.generate import generate_events
+from realtime_recommendation_pipeline.settings import KafkaSettings, LogSettings, load
 
 logger = logging.getLogger(__name__)
 
@@ -30,19 +33,31 @@ def _delivery_callback(
     message: Any,
     *,
     stats: dict[str, int],
+    event_id: object,
+    event_time: object,
 ) -> None:
-    """Count successful and failed deliveries."""
+    """Count deliveries, and log each one by event_id for tracing."""
     if error is not None:
         stats["failures"] += 1
         logger.error(
-            "Delivery failed for topic=%s key=%s: %s",
-            message.topic(),
-            message.key(),
-            error,
+            "event delivery failed",
+            extra={"event_id": event_id, "topic": message.topic(), "error": str(error)},
         )
         return
 
     stats["delivered"] += 1
+    # One line per event is too many for INFO; LOG_LEVEL=DEBUG turns them on.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "event delivered",
+            extra={
+                "event_id": event_id,
+                "event_time": event_time,
+                "topic": message.topic(),
+                "partition": message.partition(),
+                "offset": message.offset(),
+            },
+        )
 
 
 def kafka_timestamp_ms(event: dict[str, object]) -> int:
@@ -87,7 +102,7 @@ def produce_events(
     producer_factory: Callable[..., Producer] = Producer,
     malformed_rate: float = 0.0,
     dup_rate: float = 0.0,
-    topic: str = "viewing-events",
+    topic: str,
     live: bool = False,
 ) -> dict[str, int]:
     """Generate and publish events at the requested rate."""
@@ -121,7 +136,7 @@ def produce_events(
     try:
         for event in events:
             if _STOP_REQUESTED:
-                logger.info("Stop requested; ending event production.")
+                logger.info("stop requested")
                 break
 
             # Pace events using monotonic time to avoid clock adjustments.
@@ -139,6 +154,12 @@ def produce_events(
 
             user_id = str(event["user_id"])
             timestamp = kafka_timestamp_ms(event)
+            on_delivery = partial(
+                _delivery_callback,
+                stats=stats,
+                event_id=event["event_id"],
+                event_time=event["event_time"],
+            )
 
             try:
                 producer.produce(
@@ -146,11 +167,7 @@ def produce_events(
                     key=user_id.encode("utf-8"),
                     value=json.dumps(event).encode("utf-8"),
                     timestamp=timestamp,
-                    callback=lambda error, message: _delivery_callback(
-                        error,
-                        message,
-                        stats=stats,
-                    ),
+                    callback=on_delivery,
                 )
             except BufferError:
                 # The local producer queue is full. Poll to make progress,
@@ -162,11 +179,7 @@ def produce_events(
                     key=user_id.encode("utf-8"),
                     value=json.dumps(event).encode("utf-8"),
                     timestamp=timestamp,
-                    callback=lambda error, message: _delivery_callback(
-                        error,
-                        message,
-                        stats=stats,
-                    ),
+                    callback=on_delivery,
                 )
 
             # poll() serves delivery callbacks.
@@ -179,20 +192,19 @@ def produce_events(
         raise
 
     finally:
-        logger.info("Flushing outstanding Kafka messages.")
         remaining = producer.flush(timeout=30)
 
         if remaining:
             stats["failures"] += remaining
-            logger.error(
-                "%d message(s) remained undelivered after flush.",
-                remaining,
-            )
+            logger.error("undelivered after flush", extra={"undelivered": remaining})
 
     logger.info(
-        "Production finished: delivered=%d failures=%d",
-        stats["delivered"],
-        stats["failures"],
+        "production finished",
+        extra={
+            "topic": topic,
+            "delivered": stats["delivered"],
+            "failures": stats["failures"],
+        },
     )
 
     return stats
@@ -203,13 +215,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Publish synthetic viewing events to Kafka."
     )
-    parser.add_argument("--bootstrap-servers", default="localhost:9092")
     parser.add_argument("--rate", type=float, default=100.0)
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--malformed-rate", type=float, default=0.0)
     parser.add_argument("--dup-rate", type=float, default=0.0)
-    parser.add_argument("--topic", default="viewing-events")
     parser.add_argument(
         "--live",
         action="store_true",
@@ -218,22 +228,20 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    kafka = load(KafkaSettings)
+    configure_logging("producer", load(LogSettings).log_level)
 
     signal.signal(signal.SIGINT, _request_stop)
     signal.signal(signal.SIGTERM, _request_stop)
 
     produce_events(
-        bootstrap_servers=args.bootstrap_servers,
+        bootstrap_servers=kafka.bootstrap_servers,
         rate=args.rate,
         duration=args.duration,
         seed=args.seed,
         malformed_rate=args.malformed_rate,
         dup_rate=args.dup_rate,
-        topic=args.topic,
+        topic=kafka.events_topic,
         live=args.live,
     )
 
