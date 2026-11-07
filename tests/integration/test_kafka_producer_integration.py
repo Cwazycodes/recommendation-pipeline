@@ -10,6 +10,8 @@ from testcontainers.community.kafka import KafkaContainer
 
 from realtime_recommendation_pipeline.producer.kafka_producer import produce_events
 
+TOPIC = "viewing-events"
+
 
 @pytest.mark.integration
 def test_producer_publishes_and_consumer_reads_n_events() -> None:
@@ -23,6 +25,7 @@ def test_producer_publishes_and_consumer_reads_n_events() -> None:
             rate=float(event_count),
             duration=1.0,
             seed=123,
+            topic=TOPIC,
         )
 
         assert stats["failures"] == 0
@@ -40,7 +43,7 @@ def test_producer_publishes_and_consumer_reads_n_events() -> None:
         messages = []
 
         try:
-            consumer.subscribe(["viewing-events"])
+            consumer.subscribe([TOPIC])
 
             deadline = time.monotonic() + 15
 

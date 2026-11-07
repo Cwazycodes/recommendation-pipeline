@@ -3,10 +3,21 @@ from realtime_recommendation_pipeline.flink_jobs.job_config import (
     parse_job_config,
 )
 from realtime_recommendation_pipeline.flink_jobs.trending import TrendingConfig
+from realtime_recommendation_pipeline.settings import KafkaSettings
+
+KAFKA = KafkaSettings(
+    bootstrap_servers="localhost:9092",
+    events_topic="viewing-events",
+    events_dlq_topic="viewing-events-dlq",
+    trending_topic="trending-results",
+    writer_dlq_topic="trending-writer-dlq",
+    writer_group_id="results-writer",
+    writer_instance_id="results-writer-1",
+)
 
 
-def test_no_arguments_gives_the_production_job() -> None:
-    assert parse_job_config([]) == JobConfig(
+def test_no_arguments_gives_the_production_job_on_the_configured_topics() -> None:
+    assert parse_job_config(KAFKA, []) == JobConfig(
         trending=TrendingConfig(
             window_size_seconds=3600, window_slide_seconds=300, top_n=20
         ),
@@ -18,6 +29,7 @@ def test_no_arguments_gives_the_production_job() -> None:
 
 def test_demo_settings_come_from_job_arguments() -> None:
     config = parse_job_config(
+        KAFKA,
         [
             "--window-size-seconds", "120",
             "--window-slide-seconds", "10",

@@ -14,18 +14,23 @@ from realtime_recommendation_pipeline.flink_jobs.reliability import (
     to_flink_configuration,
 )
 
+CHECKPOINTS = "file:///opt/flink/checkpoints"
+
 
 def test_checkpoints_go_to_rocksdb_and_the_mounted_volume() -> None:
-    settings = job_settings()
+    settings = job_settings(CHECKPOINTS)
 
     assert settings["execution.checkpointing.interval"] == "10 s"
     assert settings["execution.checkpointing.mode"] == "EXACTLY_ONCE"
     assert settings["state.backend.type"] == "rocksdb"
-    assert settings["execution.checkpointing.dir"] == "file:///opt/flink/checkpoints"
+    assert settings["execution.checkpointing.dir"] == CHECKPOINTS
+    assert (
+        settings["execution.checkpointing.savepoint-dir"] == f"{CHECKPOINTS}/savepoints"
+    )
 
 
 def test_restarts_back_off_exponentially() -> None:
-    settings = job_settings()
+    settings = job_settings(CHECKPOINTS)
 
     assert settings["restart-strategy.type"] == "exponential-delay"
     assert settings["restart-strategy.exponential-delay.backoff-multiplier"] == "2.0"
@@ -42,7 +47,7 @@ def test_transaction_timeout_fits_under_the_broker_limit() -> None:
 @pytest.mark.slow
 def test_flink_parses_the_checkpoint_settings() -> None:
     env = StreamExecutionEnvironment.get_execution_environment(
-        to_flink_configuration(job_settings())
+        to_flink_configuration(job_settings(CHECKPOINTS))
     )
     checkpoints = env.get_checkpoint_config()
 

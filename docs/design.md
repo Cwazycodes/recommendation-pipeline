@@ -150,8 +150,8 @@ The job sets all of this itself (`flink_jobs/reliability.py`), so it travels wit
 
 - **Bugs are not hidden:** only DynamoDB errors (botocore's `ClientError` and `BotoCoreError`) become a 500 body. Anything else raises, so Lambda counts the invocation as failed and API Gateway returns its own 500.
 - **Logs:** one JSON object per request on stdout, which Lambda sends to CloudWatch Logs: `level`, the API Gateway `request_id`, the Lambda `lambda_request_id`, `method`, `query`, `status`, `error`, `window_end`, `items` and `duration_ms`. A 500 is logged at `ERROR` with the exception's type and message.
-- **Configuration:** `TABLE_NAME` (default `trending`) and, locally, `DYNAMODB_ENDPOINT_URL`. The DynamoDB resource is created once per Lambda container and reused across requests. Its client gives up quickly, with a 1 s connect timeout, a 2 s read timeout and 2 tries, instead of boto3's default 60 s read timeout, so a request fails within about 7 seconds and the Lambda timeout must be longer than that.
-- **Dependencies:** the handler imports only boto3, which the Lambda Python runtime includes, and nothing from Kafka, Flink or pydantic. A test checks this, so the function can be deployed without bundling the pipeline's other dependencies.
+- **Configuration:** `DYNAMODB_TABLE`, `DYNAMODB_PARTITION_KEY` and, locally, `DYNAMODB_ENDPOINT_URL` (see Configuration and logs). The DynamoDB resource is created once per Lambda container and reused across requests. Its client gives up quickly, with a 1 s connect timeout, a 2 s read timeout and 2 tries, instead of boto3's default 60 s read timeout, so a request fails within about 7 seconds and the Lambda timeout must be longer than that.
+- **Dependencies:** boto3, which the Lambda Python runtime includes, and pydantic-settings for its settings, which the deployment package must bundle. It imports nothing from Kafka or Flink, and a test checks that, so the package stays small.
 - **Testing:** unit tests call the handler with moto, on a table created from `infra/dynamodb/trending-table.json`, using an API Gateway HTTP API (payload 2.0) event fixture, `tests/fixtures/http_api_get_trending.json`. `make api-local LIMIT=5` builds the same kind of event and calls the handler against DynamoDB Local.
 
 ### End-to-end demo
@@ -164,6 +164,25 @@ The job sets all of this itself (`flink_jobs/reliability.py`), so it travels wit
 - **Agreed time:** the first window must reach DynamoDB within 90 seconds of the first event. By construction it takes about 50: the first window ends within 10 s, fires once the watermark (newest event time minus 30 s) passes its end, and becomes visible to `read_committed` readers at the next checkpoint, at most 10 s later. `make test-e2e` runs the demo for 60 seconds on the running stack and asserts this.
 - **Rate:** 50 events a second. Validation and deduplication run as Python functions; in the RP-19 restart test the job worked through about 110 events a second while sharing the laptop with a second stack. If the producer outpaces the job, the watermark falls behind the wall clock and windows fire late.
 - **Memory:** the stack needs most of a 4 GB Docker VM (Kafka, the Flink JobManager and TaskManager, and DynamoDB Local), so run one stack at a time. Two stacks got containers killed for running out of memory.
+
+### Configuration and logs
+
+Every setting that differs between machines comes from the environment, read with pydantic-settings (`settings.py`). Nothing configurable is written into the code, and `make test` checks that: it fails if a string literal in `src/` or `jobs/` looks like a host or port, or equals a configured table or topic name.
+
+- **Where values come from:** environment variables first, then a `.env` file in the working directory. `.env.example` is committed and lists every variable with the local stack's value and what it is for. `.env` is ignored by git; `make install` and `make up` create it from `.env.example` when it is missing, so a fresh clone runs without editing anything. make never reads `.env` itself, so a variable set in the shell still wins when a tool runs through make. In AWS the same variables are set on the Lambda function and no file is read.
+- **No defaults for addresses or names:** hosts, ports, topics, consumer groups, the table and the partition key have no default in the code. A missing one stops the program with an error that names the variable and points at `.env.example`, instead of a silent fallback to a local address. The log level (`INFO`) is the only default.
+- **One class per component:** `KafkaSettings` (`KAFKA_*`), `FlinkSettings` (`FLINK_*`), `DynamoDBSettings` (`DYNAMODB_*`) and `LogSettings` (`LOG_LEVEL`). Each program loads only what it uses, so the Lambda handler needs nothing but the `DYNAMODB_*` variables. `settings.py` imports nothing else from the package, so the Flink job can load it without boto3.
+- **Inside the Compose network:** the Flink job's main runs in the JobManager container, where Kafka is `kafka:29092` rather than `localhost:9092`, so the job uses `FLINK_KAFKA_BOOTSTRAP_SERVERS`. Compose passes `.env` to both Flink containers (`env_file`), and the Flink image includes pydantic-settings.
+- **Tests read no `.env`:** a fixture in `tests/conftest.py` turns the file off, so each test sees only the variables it sets, and a laptop behaves like CI. The end-to-end tests are the exception, because they run against the local stack.
+- **Logs:** the producer, the results writer and the read API write one JSON object per line (`common/logs.py`): `timestamp`, `level`, `service`, `logger` and `message`, plus fields for whatever the line is about. Lines about an event carry its `event_id`; lines about a window carry its `window_end`. `LOG_LEVEL=DEBUG` adds a line for every event the producer delivers.
+- **Tracing one result:** the API's line for a request names the `window_end` it served. The writer's `wrote window` line for that `window_end` gives its `generated_at`: the latest `emitted_at` of the window's rows on the trending topic, where the Flink job wrote them. The window holds the events whose `event_time` falls in the hour before `window_end`, and the producer's `event delivered` lines give each one's `event_id`, partition and offset. Events that failed validation are on the DLQ topic with their payload, `event_id` included. For example:
+
+  ```bash
+  LOG_LEVEL=DEBUG make produce 2> producer.log
+  make writer 2> writer.log
+  jq -c 'select(.window_end == "2026-09-21T14:15:00Z")' writer.log
+  jq -c 'select(.event_id == "<an event_id>")' producer.log
+  ```
 
 ### Deduplication
 

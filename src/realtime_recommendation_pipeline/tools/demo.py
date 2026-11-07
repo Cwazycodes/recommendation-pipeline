@@ -35,6 +35,12 @@ from realtime_recommendation_pipeline.common.trending_table import (
     load_table_definition,
 )
 from realtime_recommendation_pipeline.producer.kafka_producer import produce_events
+from realtime_recommendation_pipeline.settings import (
+    DynamoDBSettings,
+    FlinkSettings,
+    KafkaSettings,
+    load,
+)
 from realtime_recommendation_pipeline.tools.api_local import (
     call_handler,
     print_response,
@@ -74,8 +80,6 @@ DEMO_JOB_ARGS = [
     "--dlq-topic", EVENTS_DLQ_TOPIC,
 ]  # fmt: skip
 
-SAVEPOINT_DIR = "file:///opt/flink/checkpoints/savepoints"
-
 
 class DemoError(Exception):
     """A step of the demo failed; the message says which and what to do."""
@@ -83,12 +87,32 @@ class DemoError(Exception):
 
 @dataclass(frozen=True)
 class DemoSettings:
-    bootstrap_servers: str = "localhost:9092"
-    flink_url: str = "http://localhost:8081"
-    dynamodb_endpoint: str = "http://localhost:8001"
+    """Where the stack is (from the environment), and how long to run."""
+
+    kafka: KafkaSettings
+    flink: FlinkSettings
+    dynamo: DynamoDBSettings
     duration_s: float = 120.0
     rate: float = 50.0
     limit: int = 10
+
+    @classmethod
+    def from_env(cls, **options: Any) -> DemoSettings:
+        return cls(
+            load(KafkaSettings), load(FlinkSettings), load(DynamoDBSettings), **options
+        )
+
+    @property
+    def bootstrap_servers(self) -> str:
+        return self.kafka.bootstrap_servers
+
+    @property
+    def flink_url(self) -> str:
+        return self.flink.rest_url
+
+    @property
+    def dynamodb_endpoint(self) -> str | None:
+        return self.dynamo.endpoint_url
 
 
 @dataclass(frozen=True)
@@ -216,16 +240,16 @@ def job_is_running(flink_url: str, job_id: str) -> bool:
     )
 
 
-def stop_job(flink_url: str, job_id: str) -> None:
+def stop_job(flink: FlinkSettings, job_id: str) -> None:
     """Stop the job with a savepoint, which is safe with RocksDB unlike cancel."""
     flink_request(
-        f"{flink_url}/jobs/{job_id}/stop",
-        {"targetDirectory": SAVEPOINT_DIR, "drain": False},
+        f"{flink.rest_url}/jobs/{job_id}/stop",
+        {"targetDirectory": f"{flink.checkpoint_dir}/savepoints", "drain": False},
         timeout_s=30,
     )
     wait_until(
         "The demo job did not stop",
-        lambda: flink_request(f"{flink_url}/jobs/{job_id}")["state"] == "FINISHED",
+        lambda: flink_request(f"{flink.rest_url}/jobs/{job_id}")["state"] == "FINISHED",
         timeout_s=60,
     )
 
@@ -254,7 +278,7 @@ class WriterThread(threading.Thread):
         dynamodb = dynamodb_resource(self.settings.dynamodb_endpoint, NO_SDK_RETRIES)
         writer = ResultsWriter(
             consumer,
-            dynamodb.Table("trending"),
+            dynamodb.Table(self.settings.dynamo.table),
             KafkaDeadLetters(producer, WRITER_DLQ_TOPIC),
             partition_key=PARTITION_KEY,
         )
@@ -305,7 +329,7 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
     create_table_if_missing(
         dynamodb.meta.client, load_table_definition(TABLE_DEFINITION)
     )
-    table = dynamodb.Table("trending")
+    table = dynamodb.Table(settings.dynamo.table)
 
     recreate_topics(settings.bootstrap_servers)
     log(f"Created empty demo topics: {', '.join(TOPICS)}")
@@ -384,9 +408,8 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
             time.sleep(1)
 
         log(f"GET /trending?limit={settings.limit} on {PARTITION_KEY}:")
-        response = call_handler(
-            settings.dynamodb_endpoint, "trending", str(settings.limit), PARTITION_KEY
-        )
+        demo_list = settings.dynamo.model_copy(update={"partition_key": PARTITION_KEY})
+        response = call_handler(demo_list, str(settings.limit))
         print_response(response)
 
         return DemoResult(
@@ -400,7 +423,7 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
         if writer.is_alive():
             writer.join(timeout=15)
         try:
-            stop_job(settings.flink_url, job_id)
+            stop_job(settings.flink, job_id)
             log("Stopped the writer and the demo job (savepoint kept)")
         except (OSError, DemoError) as exc:
             log(
@@ -409,21 +432,13 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    """Kafka, Flink and DynamoDB addresses come from the environment (settings.py)."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bootstrap-servers", default="localhost:9092")
-    parser.add_argument("--flink-url", default="http://localhost:8081")
-    parser.add_argument("--endpoint-url", default="http://localhost:8001")
     parser.add_argument("--duration", type=float, default=120.0)
     parser.add_argument("--rate", type=float, default=50.0)
     args = parser.parse_args(argv)
 
-    settings = DemoSettings(
-        bootstrap_servers=args.bootstrap_servers,
-        flink_url=args.flink_url,
-        dynamodb_endpoint=args.endpoint_url,
-        duration_s=args.duration,
-        rate=args.rate,
-    )
+    settings = DemoSettings.from_env(duration_s=args.duration, rate=args.rate)
 
     try:
         result = run_demo(settings)

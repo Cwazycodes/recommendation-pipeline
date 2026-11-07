@@ -13,7 +13,7 @@ from moto import mock_aws
 
 from realtime_recommendation_pipeline.api.handler import (
     API_CLIENT_CONFIG,
-    default_table,
+    configured,
     handle,
     handler,
 )
@@ -45,17 +45,19 @@ def ranked(count: int, top_score: int = 100) -> list[dict[str, Any]]:
 @pytest.fixture
 def aws(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """moto with fake credentials, so no test can reach a real AWS account."""
-    for name in ("AWS_PROFILE", "DYNAMODB_ENDPOINT_URL", "PARTITION_KEY"):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-2")
-    monkeypatch.setenv("TABLE_NAME", "trending")
+    # The handler's settings, as Lambda would get them: no endpoint means AWS.
+    monkeypatch.setenv("DYNAMODB_ENDPOINT_URL", "")
+    monkeypatch.setenv("DYNAMODB_TABLE", "trending")
+    monkeypatch.setenv("DYNAMODB_PARTITION_KEY", "TRENDING#1h")
 
-    default_table.cache_clear()
+    configured.cache_clear()
     with mock_aws():
         yield
-    default_table.cache_clear()
+    configured.cache_clear()
 
 
 @pytest.fixture
@@ -262,7 +264,7 @@ def test_partition_key_in_the_environment_picks_the_list(
     put_window(
         table, window_item("2026-11-03T12:00:10Z", ranked(3), now, "TRENDING#2m")
     )
-    monkeypatch.setenv("PARTITION_KEY", "TRENDING#2m")
+    monkeypatch.setenv("DYNAMODB_PARTITION_KEY", "TRENDING#2m")
 
     response = handler(event, None)
 
@@ -270,13 +272,13 @@ def test_partition_key_in_the_environment_picks_the_list(
     assert body(response)["items"] == ranked(3)
 
 
-def test_handler_imports_nothing_the_lambda_runtime_lacks() -> None:
-    # The Lambda Python runtime ships boto3 but not the pipeline's other
-    # dependencies, so the handler must not pull them in.
+def test_handler_imports_nothing_from_kafka_or_flink() -> None:
+    # The deployment package bundles pydantic-settings, but Kafka's client and
+    # PyFlink are large native packages the handler must not pull in.
     script = (
         "import sys\n"
         "import realtime_recommendation_pipeline.api.handler\n"
-        "print(sorted(m for m in ('confluent_kafka', 'pydantic', 'pyflink') "
+        "print(sorted(m for m in ('confluent_kafka', 'pyflink') "
         "if m in sys.modules))\n"
     )
     result = subprocess.run(

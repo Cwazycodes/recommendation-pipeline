@@ -19,8 +19,10 @@ RUN ln -sf "$(command -v python3)" /usr/local/bin/python
 RUN python3 -m pip install --no-cache-dir \
     apache-flink==${FLINK_VERSION}
 
-# The validation job imports the event contract, which needs Pydantic.
-RUN python3 -m pip install --no-cache-dir "pydantic>=2,<3"
+# The validation job imports the event contract, which needs Pydantic, and
+# reads its settings from the environment with pydantic-settings. The image's
+# Python 3.10 gets pydantic-settings 2.15; the job uses nothing newer.
+RUN python3 -m pip install --no-cache-dir "pydantic>=2,<3" "pydantic-settings>=2,<3"
 
 ARG KAFKA_CONNECTOR_VERSION=3.3.0-1.20
 

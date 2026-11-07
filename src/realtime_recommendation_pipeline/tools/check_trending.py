@@ -20,8 +20,8 @@ from typing import Any
 from confluent_kafka import Consumer, KafkaException
 
 from realtime_recommendation_pipeline.common.kafka import downstream_consumer_config
+from realtime_recommendation_pipeline.settings import KafkaSettings, load
 
-TRENDING_TOPIC = "trending-results"
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -88,7 +88,6 @@ def read_rows(
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bootstrap-servers", default="localhost:9092")
     parser.add_argument(
         "--isolation-level",
         choices=["read_committed", "read_uncommitted"],
@@ -98,12 +97,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--idle-seconds", type=float, default=15.0)
     args = parser.parse_args(argv)
 
+    kafka = load(KafkaSettings)
     config = downstream_consumer_config(
-        args.bootstrap_servers, group_id=f"check-trending-{uuid.uuid4()}"
+        kafka.bootstrap_servers, group_id=f"check-trending-{uuid.uuid4()}"
     )
     config["isolation.level"] = args.isolation_level
 
-    rows = read_rows(config, TRENDING_TOPIC, args.idle_seconds)
+    rows = read_rows(config, kafka.trending_topic, args.idle_seconds)
     problems = check_lists(rows, args.slide_minutes)
 
     window_ends = sorted({row["window_end"] for row in rows})

@@ -2,13 +2,15 @@
 
 API Gateway (HTTP API, payload format 2.0) calls handler(event, context). It
 only reads the table the results writer fills; it never aggregates anything.
-It imports nothing beyond boto3, which the Lambda Python runtime provides.
+Its settings come from DYNAMODB_* variables (settings.py). Besides boto3, which
+the Lambda Python runtime provides, it needs pydantic-settings, so the
+deployment package must include that, but nothing from Kafka or Flink.
 """
 
 from __future__ import annotations
 
 import json
-import os
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -20,11 +22,20 @@ from typing import Any
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from realtime_recommendation_pipeline.common.logs import service_logger
 from realtime_recommendation_pipeline.common.trending_table import (
     PARTITION_KEY,
     dynamodb_resource,
     latest_window,
 )
+from realtime_recommendation_pipeline.settings import (
+    DynamoDBSettings,
+    LogSettings,
+    load,
+)
+
+# One JSON line per request on stdout, which Lambda sends to CloudWatch Logs.
+logger = service_logger(__name__, "trending-api", load(LogSettings).log_level)
 
 DEFAULT_LIMIT = 10
 # The Flink job ranks the top 20 programmes in each window.
@@ -140,17 +151,6 @@ def respond(
     )
 
 
-def log(level: str, message: str, **fields: Any) -> None:
-    """One JSON object per line on stdout, which Lambda sends to CloudWatch Logs."""
-    entry = {
-        "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
-        "level": level,
-        "message": message,
-        **{key: value for key, value in fields.items() if value is not None},
-    }
-    print(json.dumps(entry, default=str), flush=True)
-
-
 def handle(
     event: Mapping[str, Any],
     table: Any,
@@ -172,44 +172,47 @@ def handle(
 
     request = event.get("requestContext", {})
     items = reply.body.get("items")
-    log(
-        "ERROR" if reply.status >= 500 else "INFO",
+    logger.log(
+        logging.ERROR if reply.status >= 500 else logging.INFO,
         "handled GET /trending",
-        request_id=request.get("requestId"),
-        lambda_request_id=lambda_request_id,
-        method=request.get("http", {}).get("method"),
-        query=event.get("rawQueryString") or None,
-        status=reply.status,
-        error=reply.body.get("error"),
-        window_end=reply.body.get("window_end"),
-        items=None if items is None else len(items),
-        duration_ms=round((time.perf_counter() - started) * 1000, 1),
-        **outcome,
+        extra={
+            "request_id": request.get("requestId"),
+            "lambda_request_id": lambda_request_id,
+            "method": request.get("http", {}).get("method"),
+            "query": event.get("rawQueryString") or None,
+            "status": reply.status,
+            "error": reply.body.get("error"),
+            "window_end": reply.body.get("window_end"),
+            "items": None if items is None else len(items),
+            "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+            **outcome,
+        },
     )
 
     return reply.to_api_gateway()
 
 
 @cache
-def default_table() -> Any:
-    """The table named by TABLE_NAME, created once per Lambda container.
+def configured() -> tuple[DynamoDBSettings, Any]:
+    """The settings and the table, read once per Lambda container.
 
-    DYNAMODB_ENDPOINT_URL points it at DynamoDB Local; unset, it uses AWS.
+    DYNAMODB_ENDPOINT_URL points it at DynamoDB Local; empty, it uses AWS.
     """
-    endpoint_url = os.environ.get("DYNAMODB_ENDPOINT_URL") or None
-    dynamodb = dynamodb_resource(endpoint_url, config=API_CLIENT_CONFIG)
+    settings = load(DynamoDBSettings)
+    dynamodb = dynamodb_resource(settings.endpoint_url, config=API_CLIENT_CONFIG)
 
-    return dynamodb.Table(os.environ.get("TABLE_NAME", "trending"))
+    return settings, dynamodb.Table(settings.table)
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entry point: realtime_recommendation_pipeline.api.handler.handler.
 
-    PARTITION_KEY picks which list to serve; the default is the 1-hour one.
+    DYNAMODB_PARTITION_KEY picks the list to serve: TRENDING#1h on the local stack.
     """
+    settings, table = configured()
     return handle(
         event,
-        default_table(),
+        table,
         lambda_request_id=getattr(context, "aws_request_id", None),
-        partition_key=os.environ.get("PARTITION_KEY", PARTITION_KEY),
+        partition_key=settings.partition_key,
     )

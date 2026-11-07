@@ -1,4 +1,4 @@
-"""Create the 'trending' table from infra/dynamodb/trending-table.json."""
+"""Create the table named by DYNAMODB_TABLE from infra/dynamodb/trending-table.json."""
 
 from __future__ import annotations
 
@@ -11,18 +11,20 @@ from realtime_recommendation_pipeline.common.trending_table import (
     dynamodb_resource,
     load_table_definition,
 )
+from realtime_recommendation_pipeline.settings import DynamoDBSettings, load
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint-url", default="http://localhost:8001")
     parser.add_argument(
         "--definition", type=Path, default=Path("infra/dynamodb/trending-table.json")
     )
     args = parser.parse_args(argv)
 
-    definition = load_table_definition(args.definition)
-    client = dynamodb_resource(args.endpoint_url).meta.client
+    dynamo = load(DynamoDBSettings)
+    # The file gives the schema; the name comes from the settings.
+    definition = {**load_table_definition(args.definition), "TableName": dynamo.table}
+    client = dynamodb_resource(dynamo.endpoint_url).meta.client
 
     created = create_table_if_missing(client, definition)
     name = definition["TableName"]
@@ -30,7 +32,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     print(
         f"{'Created' if created else 'Found existing'} table {name} "
-        f"at {args.endpoint_url}; TTL on '{ttl['AttributeName']}' is "
+        f"at {dynamo.endpoint_url or 'AWS'}; TTL on '{ttl['AttributeName']}' is "
         f"{ttl['TimeToLiveStatus']}"
     )
 

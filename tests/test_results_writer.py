@@ -463,7 +463,7 @@ def test_unreachable_dynamodb_is_waited_out_without_committing(
 
 
 def test_writer_can_wait_out_long_outages_without_leaving_its_group() -> None:
-    config = writer_consumer_config("localhost:9092")
+    config = writer_consumer_config("localhost:9092", "results-writer", "writer-1")
 
     assert int(config["max.poll.interval.ms"]) == 30 * 60 * 1000
 

@@ -35,8 +35,7 @@ from realtime_recommendation_pipeline.flink_jobs.trending import (
     trending_table,
 )
 from realtime_recommendation_pipeline.flink_jobs.validation import validate_event
-
-BOOTSTRAP_SERVERS = "kafka:29092"
+from realtime_recommendation_pipeline.settings import FlinkSettings, KafkaSettings, load
 
 # One shared tag: the function emits to it and get_side_output() reads it.
 DLQ_TAG = OutputTag("dead-letters", Types.STRING())
@@ -63,10 +62,12 @@ class ValidateEvents(ProcessFunction):
         yield DLQ_TAG, json.dumps(result.dead_letter)
 
 
-def build_kafka_sink(topic: str, *, exactly_once: bool = False) -> KafkaSink:
+def build_kafka_sink(
+    bootstrap_servers: str, topic: str, *, exactly_once: bool = False
+) -> KafkaSink:
     builder = (
         KafkaSink.builder()
-        .set_bootstrap_servers(BOOTSTRAP_SERVERS)
+        .set_bootstrap_servers(bootstrap_servers)
         .set_record_serializer(
             KafkaRecordSerializationSchema.builder()
             .set_topic(topic)
@@ -88,17 +89,20 @@ def build_kafka_sink(topic: str, *, exactly_once: bool = False) -> KafkaSink:
 
 
 def main() -> None:
-    job = parse_job_config()
+    # FLINK_* and KAFKA_* come from .env, which Compose passes to this container.
+    kafka = load(KafkaSettings)
+    flink = load(FlinkSettings)
+    job = parse_job_config(kafka)
     env = StreamExecutionEnvironment.get_execution_environment(
-        to_flink_configuration(job_settings())
+        to_flink_configuration(job_settings(flink.checkpoint_dir))
     )
     env.set_parallelism(1)
 
     source = (
         KafkaSource.builder()
-        .set_bootstrap_servers(BOOTSTRAP_SERVERS)
+        .set_bootstrap_servers(flink.kafka_bootstrap_servers)
         .set_topics(job.source_topic)
-        .set_group_id("flink-validate")
+        .set_group_id(flink.source_group_id)
         .set_starting_offsets(KafkaOffsetsInitializer.earliest())
         .set_value_only_deserializer(SimpleStringSchema())
         .build()
@@ -121,7 +125,9 @@ def main() -> None:
 
     dead_letters = valid_events.get_side_output(DLQ_TAG)
     (
-        dead_letters.sink_to(build_kafka_sink(job.dlq_topic))
+        dead_letters.sink_to(
+            build_kafka_sink(flink.kafka_bootstrap_servers, job.dlq_topic)
+        )
         .name("viewing-events-dlq-sink")
         .uid("viewing-events-dlq-sink")
     )
@@ -140,7 +146,11 @@ def main() -> None:
         t_env.to_data_stream(trending)
         .map(to_trending_json, output_type=Types.STRING())
         .name("to-trending-json")
-        .sink_to(build_kafka_sink(job.trending_topic, exactly_once=True))
+        .sink_to(
+            build_kafka_sink(
+                flink.kafka_bootstrap_servers, job.trending_topic, exactly_once=True
+            )
+        )
         .name("trending-results-sink")
         .uid("trending-results-sink")
     )

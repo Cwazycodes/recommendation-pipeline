@@ -17,8 +17,8 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlencode
 
-from realtime_recommendation_pipeline.api.handler import default_table, handler
-from realtime_recommendation_pipeline.common.trending_table import PARTITION_KEY
+from realtime_recommendation_pipeline.api.handler import configured, handler
+from realtime_recommendation_pipeline.settings import DynamoDBSettings, load
 
 
 def http_api_event(query: Mapping[str, str]) -> dict[str, Any]:
@@ -29,17 +29,17 @@ def http_api_event(query: Mapping[str, str]) -> dict[str, Any]:
         "routeKey": "GET /trending",
         "rawPath": "/trending",
         "rawQueryString": urlencode(query),
-        "headers": {"accept": "application/json", "host": "localhost"},
+        "headers": {"accept": "application/json", "host": "api-local"},
         "requestContext": {
             "accountId": "local",
             "apiId": "local",
-            "domainName": "localhost",
-            "domainPrefix": "localhost",
+            "domainName": "api-local",
+            "domainPrefix": "api-local",
             "http": {
                 "method": "GET",
                 "path": "/trending",
                 "protocol": "HTTP/1.1",
-                "sourceIp": "127.0.0.1",
+                "sourceIp": "203.0.113.10",
                 "userAgent": "api-local",
             },
             "requestId": f"local-{uuid.uuid4()}",
@@ -57,17 +57,14 @@ def http_api_event(query: Mapping[str, str]) -> dict[str, Any]:
     return event
 
 
-def call_handler(
-    endpoint_url: str,
-    table: str = "trending",
-    limit: str | None = None,
-    partition_key: str = PARTITION_KEY,
-) -> dict[str, Any]:
-    """The handler's response to GET /trending, configured as Lambda will be."""
-    os.environ["DYNAMODB_ENDPOINT_URL"] = endpoint_url
-    os.environ["TABLE_NAME"] = table
-    os.environ["PARTITION_KEY"] = partition_key
-    default_table.cache_clear()
+def call_handler(dynamo: DynamoDBSettings, limit: str | None = None) -> dict[str, Any]:
+    """The handler's response to GET /trending, configured as Lambda will be:
+    through DYNAMODB_* environment variables.
+    """
+    os.environ["DYNAMODB_ENDPOINT_URL"] = dynamo.endpoint_url or ""
+    os.environ["DYNAMODB_TABLE"] = dynamo.table
+    os.environ["DYNAMODB_PARTITION_KEY"] = dynamo.partition_key
+    configured.cache_clear()
 
     query = {} if limit is None else {"limit": limit}
     context = SimpleNamespace(aws_request_id=f"local-{uuid.uuid4()}")
@@ -81,18 +78,14 @@ def print_response(response: Mapping[str, Any]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    """The table, endpoint and partition key come from DYNAMODB_* settings."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint-url", default="http://localhost:8001")
-    parser.add_argument("--table", default="trending")
-    parser.add_argument("--partition-key", default=PARTITION_KEY)
     parser.add_argument(
         "--limit", help="sent as given, so invalid values can be tried as well"
     )
     args = parser.parse_args(argv)
 
-    response = call_handler(
-        args.endpoint_url, args.table, args.limit, args.partition_key
-    )
+    response = call_handler(load(DynamoDBSettings), args.limit)
 
     print_response(response)
     sys.exit(0 if response["statusCode"] == 200 else 1)
