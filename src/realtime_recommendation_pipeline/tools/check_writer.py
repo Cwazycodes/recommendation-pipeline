@@ -72,6 +72,11 @@ def table_items(
         query["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
 
+def without_written_at(item: Mapping[str, Any]) -> dict[str, Any]:
+    """The item as the topic determines it: written_at is the writer's clock."""
+    return {key: value for key, value in item.items() if key != "written_at"}
+
+
 def compare(
     expected: Mapping[str, dict[str, Any]],
     actual: Mapping[str, dict[str, Any]],
@@ -94,7 +99,7 @@ def compare(
         ranks = [entry["rank"] for entry in live_actual[window_end]["items"]]
         if len(ranks) != len(set(ranks)):
             problems.append(f"duplicate: {window_end} repeats a rank")
-        elif live_actual[window_end] != live_expected[window_end]:
+        elif without_written_at(live_actual[window_end]) != live_expected[window_end]:
             problems.append(f"wrong: {window_end} differs from the topic")
 
     return problems

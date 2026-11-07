@@ -1,5 +1,7 @@
 import json
-from datetime import UTC, datetime
+import urllib.request
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -9,6 +11,7 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 
+from realtime_recommendation_pipeline.writer.metrics import WriterMetrics
 from realtime_recommendation_pipeline.writer.results_writer import (
     ResultsWriter,
     writer_consumer_config,
@@ -26,6 +29,9 @@ from realtime_recommendation_pipeline.writer.windows import (
 
 TOPIC = "trending-results"
 EMITTED_AT_MS = int(datetime(2026, 11, 2, 12, 0, tzinfo=UTC).timestamp() * 1000)
+# The writer's clock in these tests, and how written_at shows it.
+WRITTEN_AT = datetime(2026, 11, 2, 12, 0, 5, 250_000, tzinfo=UTC)
+WRITTEN_AT_TEXT = "2026-11-02T12:00:05.250Z"
 
 
 def ranked_rows(window_end: str, scores: list[int]) -> list[dict[str, Any]]:
@@ -159,6 +165,7 @@ def make_writer(
         idle_flush_s=2.0,
         clock=clock or FakeClock(),
         sleep=lambda _seconds: None,
+        now=lambda: WRITTEN_AT,
     )
 
 
@@ -170,8 +177,17 @@ def drain(writer: ResultsWriter, clock: FakeClock) -> None:
     writer.poll_once()
 
 
-def expected_items() -> dict[str, dict[str, Any]]:
+def topic_items() -> dict[str, dict[str, Any]]:
+    """Each window's item as its rows on the topic determine it."""
     return {end: window_to_item(Window(end, rows)) for end, rows in WINDOWS.items()}
+
+
+def expected_items() -> dict[str, dict[str, Any]]:
+    """The items as stored: stamped with the writer's clock when written."""
+    return {
+        end: {**item, "written_at": WRITTEN_AT_TEXT}
+        for end, item in topic_items().items()
+    }
 
 
 # --- Buffering and items -----------------------------------------------------
@@ -404,7 +420,8 @@ def test_window_that_keeps_failing_goes_to_the_dlq_and_is_committed() -> None:
     (record,) = dead_letters.records
     assert record["window_end"] == "2026-09-21T14:00:00Z"
     assert record["attempts"] == 3
-    assert record["item"] == expected_items()["2026-09-21T14:00:00Z"]
+    # Never written, so no written_at.
+    assert record["item"] == topic_items()["2026-09-21T14:00:00Z"]
     assert "ThrottlingException" in record["error"]
     assert list(table.items) == ["2026-09-21T14:05:00Z", "2026-09-21T14:10:00Z"]
     assert consumer.committed == 10
@@ -484,3 +501,98 @@ def test_writer_uses_the_partition_key_it_is_given() -> None:
 
     assert sorted(table.items) == sorted(WINDOWS)
     assert {item["pk"] for item in table.items.values()} == {"TRENDING#2m"}
+
+
+# --- written_at and metrics --------------------------------------------------
+
+
+def live_window(window_end: datetime, emitted: datetime) -> Window:
+    """A window whose rows Flink emitted at emitted, as in a live run."""
+    end = window_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    emitted_ms = int(emitted.timestamp() * 1000)
+    rows = [{**row, "window_end": end, "emitted_at": emitted_ms} for row in ROWS[:3]]
+    return Window(end, rows)
+
+
+def test_written_at_is_the_time_of_the_try_that_succeeded() -> None:
+    first_try = datetime(2026, 9, 21, 14, 0, 38, tzinfo=UTC)
+    tries = iter([first_try, first_try + timedelta(seconds=1, milliseconds=500)])
+    table = FakeTable(errors=[throttled()])
+    writer = ResultsWriter(
+        FakeConsumer(),
+        table,
+        FakeDeadLetters(),
+        RetryPolicy(max_attempts=3),
+        sleep=lambda _seconds: None,
+        now=lambda: next(tries),
+    )
+
+    window_end = datetime(2026, 9, 21, 14, 0, tzinfo=UTC)
+    writer.flush(live_window(window_end, window_end + timedelta(seconds=31)))
+
+    assert (
+        table.items["2026-09-21T14:00:00Z"]["written_at"] == "2026-09-21T14:00:39.500Z"
+    )
+
+
+def test_each_window_written_is_measured() -> None:
+    metrics = WriterMetrics()
+    window_end = datetime(2026, 9, 21, 14, 0, tzinfo=UTC)
+    writer = ResultsWriter(
+        FakeConsumer(),
+        FakeTable(),
+        FakeDeadLetters(),
+        now=lambda: window_end + timedelta(seconds=38.5),
+        metrics=metrics,
+    )
+
+    writer.flush(live_window(window_end, emitted=window_end + timedelta(seconds=31)))
+
+    sample = metrics.registry.get_sample_value
+    assert sample("trending_windows_written_total") == 1
+    # Freshness: written_at - window_end; delivery: written_at - emitted_at.
+    assert sample("trending_window_freshness_seconds_sum") == 38.5
+    assert sample("trending_window_freshness_seconds_bucket", {"le": "38.0"}) == 0
+    assert sample("trending_window_freshness_seconds_bucket", {"le": "38.5"}) == 1
+    assert sample("trending_window_delivery_seconds_sum") == 7.5
+
+
+def test_dead_lettered_windows_are_counted_not_measured() -> None:
+    metrics = WriterMetrics()
+    writer = ResultsWriter(
+        FakeConsumer(),
+        FakeTable(errors=[throttled()] * 3),
+        FakeDeadLetters(),
+        RetryPolicy(max_attempts=3),
+        sleep=lambda _seconds: None,
+        metrics=metrics,
+    )
+
+    window_end = datetime(2026, 9, 21, 14, 0, tzinfo=UTC)
+    writer.flush(live_window(window_end, window_end + timedelta(seconds=31)))
+
+    sample = metrics.registry.get_sample_value
+    assert sample("trending_windows_dead_lettered_total") == 1
+    assert sample("trending_windows_written_total") == 0
+    assert sample("trending_window_freshness_seconds_count") == 0
+
+
+@pytest.fixture
+def served_metrics() -> Iterator[tuple[WriterMetrics, int]]:
+    metrics = WriterMetrics()
+    server = metrics.serve("127.0.0.1", 0)  # port 0: any free port
+    yield metrics, server.server_port
+    server.shutdown()
+
+
+def test_metrics_are_served_for_prometheus(
+    served_metrics: tuple[WriterMetrics, int],
+) -> None:
+    metrics, port = served_metrics
+    metrics.written.inc()
+
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics") as response:
+        text = response.read().decode()
+
+    assert "trending_windows_written_total 1.0" in text
+    assert "trending_window_freshness_seconds_bucket" in text

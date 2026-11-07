@@ -1,0 +1,23 @@
+# Prometheus for the local stack (docker compose). docs/metrics.md says what
+# each metric means; make metrics reads them back.
+global:
+  # Often enough to see each 10 s window slide and checkpoint.
+  scrape_interval: 5s
+
+scrape_configs:
+  # Flink's Prometheus reporter, on port 9249 in each Flink container
+  # (metrics.reporter.prom.* in docker-compose.yml).
+  - job_name: flink
+    static_configs:
+      - targets: ["flink-jobmanager:9249", "flink-taskmanager:9249"]
+
+  # Kafka's end and committed offsets per topic, partition and consumer group.
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+
+  # The results writer runs on the host (make writer, make demo), not in
+  # Compose. The port is METRICS_WRITER_PORT in .env.
+  - job_name: results-writer
+    static_configs:
+      - targets: ["host.docker.internal:9464"]

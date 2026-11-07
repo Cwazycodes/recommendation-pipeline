@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # localhost, loopback, and the ports or Compose addresses of the local stack.
 ADDRESS = re.compile(
-    r"localhost|127\.0\.0\.1|\b(kafka|flink-jobmanager|dynamodb-local):\d+"
-    r"|:(9092|29092|8000|8001|8081)\b"
+    r"localhost|127\.0\.0\.1|\b(kafka|flink-jobmanager|dynamodb-local|prometheus):\d+"
+    r"|:(9092|29092|8000|8001|8081|9090|9249|9464)\b"
 )
 CONFIGURED_NAMES = (
     "DYNAMODB_TABLE",
@@ -74,4 +74,5 @@ def test_the_code_has_no_hosts_tables_or_topics_of_its_own() -> None:
 def test_the_check_would_catch_one() -> None:
     assert ADDRESS.search("http://localhost:8001")
     assert ADDRESS.search("kafka:29092")
+    assert ADDRESS.search("host.docker.internal:9464")
     assert not ADDRESS.search("203.0.113.10")

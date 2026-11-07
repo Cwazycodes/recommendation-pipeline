@@ -14,6 +14,8 @@ SAVEPOINT ?=
 LIMIT ?= 10
 DEMO_DURATION ?= 120
 CHAOS_DRILLS ?= taskmanager kafka writer dynamodb
+MINUTES ?= 5
+TOPIC ?=
 
 # Every host, topic and table is in .env (documented in .env.example). The
 # Python tools and the Flink containers read it themselves, so make never
@@ -22,7 +24,7 @@ CHAOS_DRILLS ?= taskmanager kafka writer dynamodb
 .env:
 	cp .env.example .env
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics
 
 ## Show all available targets and their descriptions.
 help:
@@ -155,3 +157,8 @@ test-e2e: up
 chaos: up
 	poetry run python -m realtime_recommendation_pipeline.tools.chaos \
 		$(foreach drill,$(CHAOS_DRILLS),--drill $(drill))
+
+## Print throughput, consumer lag and latency p50/p95/p99 for the last MINUTES (default 5); TOPIC=viewing-events-demo during a demo.
+metrics:
+	poetry run python -m realtime_recommendation_pipeline.tools.metrics_report \
+		--minutes $(MINUTES) $(if $(TOPIC),--topic $(TOPIC))

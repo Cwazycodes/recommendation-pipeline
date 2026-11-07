@@ -2,7 +2,8 @@
 
 Effectively once: a window's offsets are committed only after its item is
 written (or dead-lettered), so a crash replays at most the window being read,
-and writing a window again replaces its item with identical data.
+and writing a window again replaces its item with the same data and a new
+written_at. It serves Prometheus metrics on how late each window is written.
 """
 
 from __future__ import annotations
@@ -33,14 +34,17 @@ from realtime_recommendation_pipeline.common.trending_table import (
     PARTITION_KEY,
     TIME_FORMAT,
     dynamodb_resource,
+    millis_text,
     put_window,
 )
 from realtime_recommendation_pipeline.settings import (
     DynamoDBSettings,
     KafkaSettings,
     LogSettings,
+    MetricsSettings,
     load,
 )
+from realtime_recommendation_pipeline.writer.metrics import WriterMetrics
 from realtime_recommendation_pipeline.writer.retry import (
     RetryPolicy,
     WriteFailure,
@@ -49,6 +53,7 @@ from realtime_recommendation_pipeline.writer.retry import (
 from realtime_recommendation_pipeline.writer.windows import (
     Window,
     WindowBuffer,
+    emitted_at,
     window_to_item,
 )
 
@@ -66,6 +71,10 @@ OUTAGE_BACKOFF = RetryPolicy(base_delay_s=1.0, max_delay_s=30.0)
 
 # The writer does not poll Kafka while it waits out an outage. Heartbeats keep it in the group, but without a poll for max.poll.interval.ms (5 minutes by default) librdkafka leaves the group, and the next commit would fail.
 MAX_POLL_INTERVAL_MS = 30 * 60 * 1000
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def writer_consumer_config(
@@ -124,6 +133,8 @@ class ResultsWriter:
         sleep: Callable[[float], None] = time.sleep,
         partition_key: str = PARTITION_KEY,
         outage_backoff: RetryPolicy = OUTAGE_BACKOFF,
+        now: Callable[[], datetime] = utc_now,
+        metrics: WriterMetrics | None = None,
     ) -> None:
         self.consumer = consumer
         self.table = table
@@ -134,6 +145,8 @@ class ResultsWriter:
         self.sleep = sleep
         self.partition_key = partition_key
         self.outage_backoff = outage_backoff
+        self.now = now
+        self.metrics = metrics or WriterMetrics()
         self.buffer = WindowBuffer()
         self.last_message_at = clock()
 
@@ -168,12 +181,17 @@ class ResultsWriter:
         failure = self.write_when_reachable(item)
 
         if failure is None:
+            window_end = datetime.fromisoformat(window.window_end)
+            written_at = datetime.fromisoformat(item["written_at"])
+            self.metrics.window_written(window_end, emitted_at(window), written_at)
             logger.info(
                 "wrote window",
                 extra={
                     "window_end": window.window_end,
                     "programmes": len(item["items"]),
                     "generated_at": item["generated_at"],
+                    "written_at": item["written_at"],
+                    "freshness_s": (written_at - window_end).total_seconds(),
                 },
             )
         else:
@@ -183,9 +201,10 @@ class ResultsWriter:
                     "item": item,
                     "error": failure.error,
                     "attempts": failure.attempts,
-                    "dead_lettered_at": datetime.now(UTC).strftime(TIME_FORMAT),
+                    "dead_lettered_at": self.now().strftime(TIME_FORMAT),
                 }
             )
+            self.metrics.dead_lettered.inc()
             logger.error(
                 "dead-lettered window",
                 extra={
@@ -207,7 +226,7 @@ class ResultsWriter:
         while True:
             try:
                 return write_with_retry(
-                    lambda: put_window(self.table, item), self.retry, sleep=self.sleep
+                    lambda: self.put(item), self.retry, sleep=self.sleep
                 )
             except UNREACHABLE as exc:
                 outage_tries += 1
@@ -222,6 +241,16 @@ class ResultsWriter:
                     },
                 )
                 self.sleep(delay)
+
+    def put(self, item: dict[str, Any]) -> None:
+        """One put_item, stamped with written_at: when this try is made.
+
+        item gets written_at only once the put succeeds, so a dead-lettered
+        item never says it was written.
+        """
+        written_at = millis_text(self.now())
+        put_window(self.table, {**item, "written_at": written_at})
+        item["written_at"] = written_at
 
     def commit(self) -> None:
         """Commit every offset before the window still being read."""
@@ -247,7 +276,12 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     kafka = load(KafkaSettings)
     dynamo = load(DynamoDBSettings)
+    endpoint = load(MetricsSettings)
     configure_logging("results-writer", load(LogSettings).log_level)
+
+    # Served from the start, so Prometheus sees the counters at zero first.
+    metrics = WriterMetrics()
+    server = metrics.serve(endpoint.writer_host, endpoint.writer_port)
 
     consumer = Consumer(
         writer_consumer_config(
@@ -271,6 +305,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         RetryPolicy(max_attempts=args.max_attempts),
         idle_flush_s=args.idle_flush_seconds,
         partition_key=dynamo.partition_key,
+        metrics=metrics,
     )
 
     # Rows buffered for a partition this writer loses were never committed, so
@@ -296,6 +331,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "table": dynamo.table,
             "partition_key": dynamo.partition_key,
             "group_id": kafka.writer_group_id,
+            "metrics_port": endpoint.writer_port,
         },
     )
     try:
@@ -304,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         # No commit here: a window that was only partly read is read again
         # from its first row on the next start.
         consumer.close()
+        server.shutdown()
         logger.info("writer stopped")
 
 

@@ -9,6 +9,7 @@ from realtime_recommendation_pipeline.settings import (
     FlinkSettings,
     KafkaSettings,
     LogSettings,
+    MetricsSettings,
 )
 
 
@@ -25,6 +26,7 @@ def no_env_file(
             KafkaSettings,
             FlinkSettings,
             DynamoDBSettings,
+            MetricsSettings,
             LogSettings,
         ):
             monkeypatch.setitem(settings_class.model_config, "env_file", None)

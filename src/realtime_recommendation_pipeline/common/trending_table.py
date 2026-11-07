@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -104,6 +104,11 @@ def window_item(
         "generated_at": generated_at.strftime(TIME_FORMAT),
         "ttl": int((generated_at + RETENTION).timestamp()),
     }
+
+
+def millis_text(moment: datetime) -> str:
+    """ISO 8601 UTC to the millisecond, for written_at: 2026-09-21T14:00:41.250Z."""
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds")[:-6] + "Z"
 
 
 def put_window(table: Any, item: Mapping[str, Any]) -> None:

@@ -2,7 +2,8 @@
 
 Live viewing events go into Kafka, the Flink job ranks them in 2-minute windows
 sliding every 10 seconds, the results writer copies each window into DynamoDB
-Local, and the API's Lambda handler serves the latest list. The demo has its
+Local, and the API's Lambda handler serves the latest list. At the end it
+prints the run's throughput, lag and latency from Prometheus. The demo has its
 own topics and partition key, so it never touches the 1-hour pipeline's data.
 """
 
@@ -39,12 +40,19 @@ from realtime_recommendation_pipeline.settings import (
     DynamoDBSettings,
     FlinkSettings,
     KafkaSettings,
+    MetricsSettings,
     load,
 )
 from realtime_recommendation_pipeline.tools.api_local import (
     call_handler,
-    print_response,
 )
+from realtime_recommendation_pipeline.tools.metrics_report import (
+    MetricsError,
+    Source,
+    prometheus_query,
+    report,
+)
+from realtime_recommendation_pipeline.writer.metrics import WriterMetrics
 from realtime_recommendation_pipeline.writer.results_writer import (
     NO_SDK_RETRIES,
     KafkaDeadLetters,
@@ -92,6 +100,7 @@ class DemoSettings:
     kafka: KafkaSettings
     flink: FlinkSettings
     dynamo: DynamoDBSettings
+    metrics: MetricsSettings
     duration_s: float = 120.0
     rate: float = 50.0
     limit: int = 10
@@ -99,7 +108,11 @@ class DemoSettings:
     @classmethod
     def from_env(cls, **options: Any) -> DemoSettings:
         return cls(
-            load(KafkaSettings), load(FlinkSettings), load(DynamoDBSettings), **options
+            load(KafkaSettings),
+            load(FlinkSettings),
+            load(DynamoDBSettings),
+            load(MetricsSettings),
+            **options,
         )
 
     @property
@@ -276,11 +289,18 @@ class WriterThread(threading.Thread):
             }
         )
         dynamodb = dynamodb_resource(self.settings.dynamodb_endpoint, NO_SDK_RETRIES)
+        # Served where make writer serves them, so Prometheus scrapes this run.
+        metrics = WriterMetrics()
+        server = metrics.serve(
+            self.settings.metrics.writer_host, self.settings.metrics.writer_port
+        )
+
         writer = ResultsWriter(
             consumer,
             dynamodb.Table(self.settings.dynamo.table),
             KafkaDeadLetters(producer, WRITER_DLQ_TOPIC),
             partition_key=PARTITION_KEY,
+            metrics=metrics,
         )
         consumer.subscribe(
             [TRENDING_TOPIC], on_revoke=lambda _c, _p: writer.buffer.clear()
@@ -290,6 +310,7 @@ class WriterThread(threading.Thread):
             writer.run(self.stopping.is_set)
         finally:
             consumer.close()
+            server.shutdown()
 
 
 class ProducerThread(threading.Thread):
@@ -308,6 +329,32 @@ class ProducerThread(threading.Thread):
             topic=EVENTS_TOPIC,
             live=True,
         )
+
+
+def print_metrics(
+    settings: DemoSettings,
+    say: Callable[[str], None],
+    produced_from: float,
+    produced_to: float,
+) -> None:
+    """The run's metrics: throughput and lag while producing, latency since."""
+    url = settings.metrics.prometheus_url
+    source = Source(EVENTS_TOPIC, settings.flink.source_group_id)
+    try:
+        lines = report(
+            prometheus_query(url),
+            source,
+            produced_from,
+            produced_to,
+            produced_from,
+            time.time(),
+        )
+    except (OSError, MetricsError) as exc:
+        say(f"Could not read metrics from Prometheus at {url}: {exc}")
+        return
+
+    for line in lines:
+        say(line)
 
 
 def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> DemoResult:
@@ -352,6 +399,7 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
         producer = ProducerThread(settings)
         producer.start()
         first_event_at = time.monotonic()
+        produced_from = time.time()
         log(
             f"Job running, writer started. Producing {settings.rate:.0f} live events/s "
             f"for {settings.duration_s:.0f} s; results expected within "
@@ -363,6 +411,7 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
         last_window_end = ""
         last_change = time.monotonic()
         producer_done_at: float | None = None
+        produced_to = time.time()
 
         while True:
             try:
@@ -394,6 +443,7 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
                 if producer.stats is None:
                     raise DemoError("The producer stopped; its error is above")
                 producer_done_at = time.monotonic()
+                produced_to = time.time()
                 log(
                     f"Produced {producer.stats['delivered']} events; waiting for "
                     "the last windows"
@@ -410,7 +460,7 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
         log(f"GET /trending?limit={settings.limit} on {PARTITION_KEY}:")
         demo_list = settings.dynamo.model_copy(update={"partition_key": PARTITION_KEY})
         response = call_handler(demo_list, str(settings.limit))
-        print_response(response)
+        print_metrics(settings, say, produced_from, produced_to)
 
         return DemoResult(
             first_window_after_s=first_window_after_s,
