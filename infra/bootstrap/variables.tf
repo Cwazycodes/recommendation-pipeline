@@ -10,10 +10,12 @@ variable "name" {
   default     = "recommendation-pipeline"
 }
 
-variable "github_repository" {
-  description = "The repository whose deploy workflow may assume the role, as owner/name."
+variable "github_subject" {
+  description = "The repository as its OIDC tokens' sub claim names it: gh api repos/OWNER/NAME/actions/oidc/customization/sub --jq .sub_claim_prefix"
   type        = string
-  default     = "Cwazycodes/recommendation-pipeline"
+  # Immutable form, with the owner's and the repository's IDs: a repository
+  # deleted and created again under the same name would have a new ID.
+  default = "repo:Cwazycodes@170112433/recommendation-pipeline@1427492276"
 }
 
 variable "deploy_branch" {

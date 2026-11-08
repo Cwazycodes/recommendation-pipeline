@@ -6,9 +6,9 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 # Only runs on the deploy branch of this repository can assume the role. Their
-# token's sub claim is repo:<owner>/<name>:ref:refs/heads/main; pull requests
-# (repo:<owner>/<name>:pull_request), other branches, tags and environments
-# have other subjects.
+# token's sub claim is <github_subject>:ref:refs/heads/main; pull requests
+# (<github_subject>:pull_request), other branches, tags and environments have
+# other subjects.
 resource "aws_iam_role" "deploy" {
   name = "${var.name}-github-deploy"
 
@@ -21,7 +21,7 @@ resource "aws_iam_role" "deploy" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:ref:refs/heads/${var.deploy_branch}"
+          "token.actions.githubusercontent.com:sub" = "${var.github_subject}:ref:refs/heads/${var.deploy_branch}"
         }
       }
     }]
@@ -78,10 +78,18 @@ resource "aws_iam_role_policy" "deploy" {
       },
       {
         # An HTTP API's ID is only known once it exists, so this covers the
-        # region's HTTP APIs.
+        # region's HTTP APIs. Creating a stage with tags is also checked as
+        # TagResource.
         Sid    = "HttpApi"
         Effect = "Allow"
-        Action = ["apigateway:GET", "apigateway:POST", "apigateway:PUT", "apigateway:PATCH", "apigateway:DELETE"]
+        Action = [
+          "apigateway:GET",
+          "apigateway:POST",
+          "apigateway:PUT",
+          "apigateway:PATCH",
+          "apigateway:DELETE",
+          "apigateway:TagResource",
+        ]
         Resource = [
           "arn:aws:apigateway:${var.region}::/apis",
           "arn:aws:apigateway:${var.region}::/apis/*",
