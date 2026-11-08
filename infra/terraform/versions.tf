@@ -3,11 +3,20 @@
 # make deploy creates it and make destroy deletes it (docs/design.md,
 # "Deployment").
 #
-# State is local (terraform.tfstate here, which git ignores): one person
-# deploys this stack, so there is nothing to share or lock against.
+# State is in S3, in the bucket make bootstrap creates (infra/bootstrap), so a
+# deploy from GitHub Actions and one from a laptop share it, and S3 lock files
+# stop two from running at once. make passes the bucket's name, which includes
+# the account ID.
 
 terraform {
   required_version = ">= 1.17, < 2.0"
+
+  backend "s3" {
+    key          = "recommendation-pipeline/terraform.tfstate"
+    region       = "eu-west-2"
+    encrypt      = true
+    use_lockfile = true
+  }
 
   required_providers {
     aws = {

@@ -1,0 +1,71 @@
+name: Deploy
+
+# Started by hand from the Actions tab. The job swaps GitHub's short-lived OIDC
+# token for the deploy role's credentials, so the repository stores no AWS
+# keys, and the role only trusts runs on main of this repository
+# (infra/bootstrap/github.tf).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# One deploy at a time: a second run waits rather than cancelling the first.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy the AWS stack
+    # Runs started on another branch are skipped; the role would refuse them.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.5.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: poetry
+          cache-dependency-path: poetry.lock
+
+      # Also installs Poetry's export plugin: all make package-lambda needs.
+      - name: Install the Lambda's dependencies
+        run: poetry install --only lambda --no-root
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.1"
+          terraform_wrapper: false
+
+      - name: Assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: eu-west-2
+          mask-aws-account-id: true
+
+      # AWS_PROFILE is empty: the credentials are already in the environment.
+      - name: Deploy
+        run: make deploy AWS_PROFILE= TF_ARGS=-auto-approve
+
+      - name: Check the API answers
+        run: |
+          url=$(terraform -chdir=infra/terraform output -raw api_url)
+          status=$(curl --silent --output response.json --write-out '%{http_code}' "$url")
+          echo "GET $url: $status $(cat response.json)"
+          # A list, or the handler's 404 until the writer has stored a window.
+          test "$status" = 200 || grep -q no_trending_data response.json

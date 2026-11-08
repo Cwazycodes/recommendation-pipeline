@@ -24,10 +24,12 @@ make demo
 
 The trending table and the read API also run in AWS, in eu-west-2, defined in Terraform ([docs/design.md](docs/design.md), "Deployment"). You need Terraform 1.17 or later and the AWS CLI, signed in with `aws login --profile rp`.
 
+Once per account, `make bootstrap` creates the Terraform state bucket and the role GitHub Actions deploys with. After that, run **Deploy** from the repository's Actions tab, which assumes the role through OIDC with no stored keys, or deploy from your machine:
+
 ```bash
 make deploy    # builds the Lambda package, then creates the table, Lambda, HTTP API, logs and IAM roles
 curl "$(terraform -chdir=infra/terraform output -raw api_url)"
 make destroy   # deletes all of it
 ```
 
-`make tf-plan` shows what `make deploy` would change without changing anything.
+`make tf-plan` shows what `make deploy` would change without changing anything. Both ways share the state in S3, so either can update or delete what the other deployed.
