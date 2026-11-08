@@ -10,15 +10,15 @@ import pytest
 from realtime_recommendation_pipeline.tools.metrics_report import (
     Ingest,
     Latency,
-    Source,
     format_report,
     prometheus_query,
+    prometheus_query_by_label,
     read_ingest,
     read_latency,
 )
 
 START, END = 1_790_000_000.0, 1_790_000_120.0  # a two-minute run
-SOURCE = Source("viewing-events-demo", "flink-validate")
+TOPIC = "viewing-events-demo"
 
 
 def fake_prometheus(answers: dict[str, float | None]) -> Any:
@@ -43,12 +43,12 @@ def test_throughput_is_events_per_second_over_the_run() -> None:
             "increase(flink_taskmanager_job_task_operator_numRecordsOut": 5880.0,
             "deriv(": 0.2,
             "max_over_time(": 340.0,
-            "min_over_time(": 12.0,
             "watermarkLag": 30.4,
+            "count(flink_taskmanager_job_task_operator_KafkaSourceReader": 12.0,
         }
     )
 
-    ingest = read_ingest(query, SOURCE, START, END)
+    ingest = read_ingest(query, TOPIC, START, END)
 
     assert ingest == Ingest(
         produced_per_s=50.0,
@@ -62,18 +62,24 @@ def test_throughput_is_events_per_second_over_the_run() -> None:
     assert {at for _expression, at in query.asked} == {END}
 
 
-def test_lag_is_the_jobs_group_on_its_topic_just_after_checkpoints() -> None:
+def test_lag_is_end_offsets_minus_where_the_job_has_read_to() -> None:
     query = fake_prometheus({})
 
-    read_ingest(query, SOURCE, START, END)
+    read_ingest(query, TOPIC, START, END)
 
-    group_lag = (
-        'sum(kafka_consumergroup_lag{consumergroup="flink-validate", '
-        'topic="viewing-events-demo"})'
+    # Flink's reporter writes the topic with underscores; currentOffset is
+    # the last offset read, so the next one is currentOffset + 1.
+    read = (
+        "flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition"
+        '_currentOffset{topic="viewing_events_demo"}'
+    )
+    lag = (
+        'sum(kafka_topic_partition_current_offset{topic="viewing-events-demo"})'
+        f" - sum({read}) - count({read})"
     )
     asked = [expression for expression, _at in query.asked]
-    assert f"min_over_time({group_lag}[15s:5s])" in asked
-    assert f"deriv((min_over_time({group_lag}[15s:5s]))[120s:5s])" in asked
+    assert f"clamp_min({lag}, 0)" in asked
+    assert f"deriv(({lag})[120s:5s])" in asked
 
 
 @pytest.mark.parametrize(
@@ -144,6 +150,17 @@ ANSWERS: dict[str, Any] = {
         "status": "success",
         "data": {"resultType": "scalar", "result": [END, "2"]},
     },
+    "by_task": {
+        "status": "success",
+        "data": {
+            "resultType": "vector",
+            "result": [
+                {"metric": {"task_name": "source"}, "value": [END, "151.75"]},
+                {"metric": {"task_name": "dedup"}, "value": [END, "997.5"]},
+                {"metric": {"task_name": "rank"}, "value": [END, "NaN"]},
+            ],
+        },
+    },
 }
 
 
@@ -177,3 +194,10 @@ def test_prometheus_answers_become_numbers_or_none(prometheus_url: str) -> None:
     assert query("scalar", END) == 2.0
     assert query("empty", END) is None
     assert query("nan", END) is None
+
+
+def test_answers_by_label_become_a_number_per_label(prometheus_url: str) -> None:
+    query = prometheus_query_by_label(prometheus_url, "task_name")
+
+    assert query("by_task", END) == {"source": 151.75, "dedup": 997.5}
+    assert query("empty", END) == {}

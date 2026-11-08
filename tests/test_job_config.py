@@ -1,3 +1,5 @@
+import pytest
+
 from realtime_recommendation_pipeline.flink_jobs.job_config import (
     JobConfig,
     parse_job_config,
@@ -48,3 +50,13 @@ def test_demo_settings_come_from_job_arguments() -> None:
         trending_topic="trending-results-demo",
         dlq_topic="viewing-events-dlq-demo",
     )
+
+
+def test_parallelism_is_a_job_argument_and_one_by_default() -> None:
+    assert parse_job_config(KAFKA, []).parallelism == 1
+    assert parse_job_config(KAFKA, ["--parallelism", "2"]).parallelism == 2
+
+
+def test_parallelism_must_be_at_least_one() -> None:
+    with pytest.raises(SystemExit):
+        parse_job_config(KAFKA, ["--parallelism", "0"])
