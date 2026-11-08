@@ -106,3 +106,19 @@ jobs:
 
       - name: Run Kafka integration tests
         run: make test-int
+
+  terraform:
+    name: Terraform format and validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.1"
+
+      - name: Check formatting and validate
+        run: make tf-check
