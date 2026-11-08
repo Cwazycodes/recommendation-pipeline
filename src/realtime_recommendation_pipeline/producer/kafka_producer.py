@@ -132,6 +132,9 @@ def produce_events(
 
     start_time = time.monotonic()
     next_event_time = start_time
+    # When sending began and ended (epoch ms), for make bench: at high rates
+    # generating the events above takes tens of seconds.
+    stats["sent_from_ms"] = time.time_ns() // 1_000_000
 
     try:
         for event in events:
@@ -193,6 +196,7 @@ def produce_events(
 
     finally:
         remaining = producer.flush(timeout=30)
+        stats["sent_to_ms"] = time.time_ns() // 1_000_000
 
         if remaining:
             stats["failures"] += remaining

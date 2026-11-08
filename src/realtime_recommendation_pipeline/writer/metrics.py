@@ -63,6 +63,9 @@ class WriterMetrics:
         self.written.inc()
 
     def serve(self, host: str, port: int) -> WSGIServer:
-        """Serve /metrics from a background thread; shut the server down to stop."""
+        """Serve /metrics from a background thread.
+
+        To stop, shut the server down and close it, which frees the port.
+        """
         server, _thread = start_http_server(port, addr=host, registry=self.registry)
         return server

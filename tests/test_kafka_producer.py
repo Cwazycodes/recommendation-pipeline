@@ -139,3 +139,19 @@ def test_events_go_to_the_given_topic() -> None:
     )
 
     assert set(fake.topics) == {"viewing-events-demo"}
+
+
+def test_stats_say_when_sending_began_and_ended() -> None:
+    before_ms = time.time_ns() // 1_000_000
+
+    stats = produce_events(
+        bootstrap_servers="unused:9092",
+        rate=10_000,
+        duration=0.05,
+        producer_factory=lambda _config: FakeProducer(),
+        topic="viewing-events",
+    )
+
+    after_ms = time.time_ns() // 1_000_000
+    assert stats["delivered"] == 500
+    assert before_ms <= stats["sent_from_ms"] <= stats["sent_to_ms"] <= after_ms

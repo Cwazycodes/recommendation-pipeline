@@ -1,0 +1,53 @@
+parallelism,partitions,rate,task,busy_ms_per_s,backpressured_ms_per_s
+1,6,50,GlobalWindowAggregate,24.65,0
+1,6,50,WindowRank,94.05,0
+1,6,50,"deduplicate-events, to-event-rows",721.2,0
+1,6,50,viewing-events-source,218.3,0
+1,6,100,GlobalWindowAggregate,4.85,0
+1,6,100,WindowRank,45.4,0
+1,6,100,"deduplicate-events, to-event-rows",602.7,0
+1,6,100,viewing-events-source,235.85,0
+1,6,150,GlobalWindowAggregate,4.6,0
+1,6,150,WindowRank,40.45,0
+1,6,150,"deduplicate-events, to-event-rows",765.1,0
+1,6,150,viewing-events-source,195.05,2.2
+1,6,200,GlobalWindowAggregate,4.5,0
+1,6,200,WindowRank,33.2,0
+1,6,200,"deduplicate-events, to-event-rows",922.3,0
+1,6,200,viewing-events-source,96.3,749.6
+1,6,300,GlobalWindowAggregate,3.6,0
+1,6,300,WindowRank,31.5,0
+1,6,300,"deduplicate-events, to-event-rows",922.4,0
+1,6,300,viewing-events-source,85,784.6
+1,6,500,GlobalWindowAggregate,3.65,0
+1,6,500,WindowRank,16.15,0
+1,6,500,"deduplicate-events, to-event-rows",922.7,0
+1,6,500,viewing-events-source,59.75,846.1
+1,6,2000,GlobalWindowAggregate,3.75,0
+1,6,2000,WindowRank,36.85,0
+1,6,2000,"deduplicate-events, to-event-rows",910.1,0
+1,6,2000,viewing-events-source,70.9,846.45
+2,6,100,GlobalWindowAggregate,7.25,0
+2,6,100,WindowRank,41.9,0
+2,6,100,"deduplicate-events, to-event-rows",415,0
+2,6,100,viewing-events-source,176.25,0
+2,6,200,GlobalWindowAggregate,7.55,0
+2,6,200,WindowRank,55.3,0
+2,6,200,"deduplicate-events, to-event-rows",799.75,0
+2,6,200,viewing-events-source,220.4,0
+2,6,300,GlobalWindowAggregate,29.65,0
+2,6,300,WindowRank,81.55,0
+2,6,300,"deduplicate-events, to-event-rows",900.55,0
+2,6,300,viewing-events-source,183.4,479.05
+2,6,400,GlobalWindowAggregate,4.75,0
+2,6,400,WindowRank,39.05,0
+2,6,400,"deduplicate-events, to-event-rows",934.95,0
+2,6,400,viewing-events-source,102.6,739.4
+2,6,500,GlobalWindowAggregate,14.5,0
+2,6,500,WindowRank,50.25,0
+2,6,500,"deduplicate-events, to-event-rows",951.05,0
+2,6,500,viewing-events-source,107.7,831.8
+2,6,2000,GlobalWindowAggregate,3.2,0
+2,6,2000,WindowRank,32.05,0
+2,6,2000,"deduplicate-events, to-event-rows",891.85,0
+2,6,2000,viewing-events-source,73.1,828.8

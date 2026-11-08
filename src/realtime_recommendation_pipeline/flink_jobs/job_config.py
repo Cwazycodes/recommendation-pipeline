@@ -12,12 +12,18 @@ from realtime_recommendation_pipeline.settings import KafkaSettings
 
 @dataclass(frozen=True)
 class JobConfig:
-    """The topics the job reads and writes, and its trending settings."""
+    """The topics the job reads and writes, and its trending settings.
+
+    parallelism is for the stages that handle each event: the Kafka source,
+    validation and deduplication. Windowing, ranking and the trending sink
+    always run as one, so each window's rows reach the topic together.
+    """
 
     trending: TrendingConfig
     source_topic: str
     trending_topic: str
     dlq_topic: str
+    parallelism: int = 1
 
 
 def parse_job_config(
@@ -40,7 +46,10 @@ def parse_job_config(
     parser.add_argument("--source-topic", default=kafka.events_topic)
     parser.add_argument("--trending-topic", default=kafka.trending_topic)
     parser.add_argument("--dlq-topic", default=kafka.events_dlq_topic)
+    parser.add_argument("--parallelism", type=int, default=1)
     args = parser.parse_args(argv)
+    if args.parallelism < 1:
+        parser.error("--parallelism must be at least 1")
 
     return JobConfig(
         trending=TrendingConfig(
@@ -51,4 +60,5 @@ def parse_job_config(
         source_topic=args.source_topic,
         trending_topic=args.trending_topic,
         dlq_topic=args.dlq_topic,
+        parallelism=args.parallelism,
     )

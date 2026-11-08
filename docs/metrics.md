@@ -12,16 +12,18 @@ Events per second the Flink job reads from the events topic: how much the Kafka 
 
 ### Consumer lag
 
-Records on the events topic that the job has not read yet, as Kafka measures it: for each partition, the end offset minus the offset the job's consumer group (`FLINK_SOURCE_GROUP_ID`) has committed, summed over the topic's partitions. kafka-exporter reads both from Kafka for Prometheus.
+Records on the events topic that the job has not read yet: for each partition, the end offset minus the next offset the job's Kafka source will read, summed over the topic's partitions. kafka-exporter reads the end offsets from Kafka, and the source reports the last offset it has read in each partition (`currentOffset`; the next one is one more).
 
-The job commits its offsets when a checkpoint completes, every 10 s, so between checkpoints the group's lag climbs by the events that arrived and then drops back. **Lag at a moment is the lowest value in the 15 s before it**, which is the lag just after the last checkpoint.
+Prometheus scrapes kafka-exporter and Flink a few seconds apart, so lag is only accurate to within a few seconds' worth of events, about 300 records at 100 events/s. A reading below 0 is shown as 0. The trend is unaffected, because the gap between the two scrapes stays the same.
 
-Flink's own `pendingRecords` metric is not used. It comes from the Kafka client's lag figure, which is only updated when the client fetches, and when the job falls behind, the fetcher waits on a buffer it has already filled. In a run at 400 events/s, Kafka showed 16,493 records behind while `pendingRecords` never went above 989.
+This is not Kafka's own consumer-group lag, which counts from the offsets the job commits. The job commits them only when a checkpoint completes, and under load checkpoints took up to 17 s instead of a fraction of a second, so the group's lag rose and fell with them. In a benchmark run that kept up at 100 events/s, the group's lag reached 2,586 records while the job's read position stayed about 330 records behind (813 at most).
+
+Flink's own `pendingRecords` metric is not used either. It comes from the Kafka client's lag figure, which is only updated when the client fetches, and when the job falls behind, the fetcher waits on a buffer it has already filled. In a run at 400 events/s, Kafka showed 16,493 records behind while `pendingRecords` never went above 989.
 
 **Lag trend** is the slope of lag over the run, from a least-squares fit (Prometheus `deriv`).
 - **Growing:** lag rises by more than 1 record for every 100 the job reads (slope above 1% of throughput).
 - **Shrinking:** lag falls as fast.
-- **Steady:** anything in between. Lag is never perfectly flat, because events arrive between checkpoints.
+- **Steady:** anything in between. Lag is never perfectly flat, because the source reads in batches.
 
 ### Freshness
 
@@ -62,13 +64,13 @@ The target in design.md section 6, p95 of 30 seconds or less, is checked against
 |---|---|---|
 | Throughput | `flink_taskmanager_job_task_operator_numRecordsOut{operator_name="Source:_viewing_events_source"}` | Flink's Prometheus reporter, port 9249 in each Flink container |
 | Produced rate | `kafka_topic_partition_current_offset{topic=...}` | kafka-exporter (Compose), from Kafka |
-| Consumer lag | `kafka_consumergroup_lag{consumergroup="flink-validate", topic=...}` | kafka-exporter |
+| Consumer lag | `kafka_topic_partition_current_offset{topic=...}` minus `flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic=...}` + 1, per partition | kafka-exporter, and the job's Kafka source |
 | Watermark delay | `flink_taskmanager_job_task_operator_watermarkLag{...}` (ms), same source | Flink |
 | Freshness | `trending_window_freshness_seconds` (histogram) | the results writer, `METRICS_WRITER_PORT` (9464) |
 | Delivery latency | `trending_window_delivery_seconds` (histogram) | the results writer |
 | Windows written, dead-lettered | `trending_windows_written_total`, `trending_windows_dead_lettered_total` | the results writer |
 
-Flink's reporter replaces the hyphens in operator names with underscores, so the source `viewing-events-source` is `Source:_viewing_events_source`.
+Flink's reporter replaces the hyphens in operator names and topics with underscores, so the source `viewing-events-source` is `Source:_viewing_events_source` and its offsets for `viewing-events-demo` have `topic="viewing_events_demo"`.
 
 Prometheus runs in Compose (`make up`, http://localhost:9090) and scrapes Flink, kafka-exporter and the writer every 5 seconds (`infra/prometheus/prometheus.yml`). The writer runs on the host, so Prometheus reaches it as `host.docker.internal:9464`. `make writer`, `make demo` and the chaos drills' writer all serve on that port, so run one of them at a time. Grafana is left out: Prometheus's own graph page draws these queries, and the stack already needs most of a 4 GB Docker VM.
 
@@ -80,17 +82,17 @@ Prometheus runs in Compose (`make up`, http://localhost:9090) and scrapes Flink,
 From `make demo` (50 events/s for 2 minutes on the local stack):
 
 ```text
-Metrics from 15:30:17 to 15:32:34 UTC (see docs/metrics.md)
-  Throughput       49.7 events/s read by the job (49.6 produced)
-  Consumer lag     93 records at the end, at most 355, trend 0.0 records/s (steady)
+Metrics from 22:19:55 to 22:22:16 UTC (see docs/metrics.md)
+  Throughput       49.9 events/s read by the job (49.4 produced)
+  Consumer lag     0 records at the end, at most 167, trend 0.1 records/s (steady)
   Watermark delay  30.3 s at the end (bound 30 s)
   Windows written  9
-  Freshness        p50  36.2 s  p95  36.5 s  p99  36.5 s
-  Processing       p50   6.2 s  p95   6.5 s  p99   6.5 s  (freshness - 30 s)
-  Delivery         p50   2.2 s  p95   2.5 s  p99   2.5 s
+  Freshness        p50  41.8 s  p95  42.4 s  p99  42.5 s
+  Processing       p50  11.8 s  p95  12.4 s  p99  12.5 s  (freshness - 30 s)
+  Delivery         p50   7.7 s  p95   8.0 s  p99   8.0 s
 ```
 
-The same demo at 300 events/s fell behind. Throughput was 195.7 events/s read against 292.5 produced, lag reached 8,006 records and was growing at 138 records/s, and the watermark delay was 47 s. No window had been written yet, so the latency rows showed `n/a`.
+Most of the processing latency here is delivery: the wait for the checkpoint that commits the window's rows (up to 10 s), plus the writer's 2 s idle flush. Where the checkpoints fall relative to the windows changes from run to run, so the same demo has also shown a delivery p95 of 2.5 s. [benchmarks.md](benchmarks.md) measures the same numbers at higher rates, up to where the job falls behind.
 
 In Prometheus's graph page:
 
@@ -98,7 +100,9 @@ In Prometheus's graph page:
 # Events read per second
 sum(rate(flink_taskmanager_job_task_operator_numRecordsOut{operator_name="Source:_viewing_events_source"}[1m]))
 # Consumer lag in records, for the demo's topic
-sum(kafka_consumergroup_lag{consumergroup="flink-validate", topic="viewing-events-demo"})
+sum(kafka_topic_partition_current_offset{topic="viewing-events-demo"})
+  - sum(flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic="viewing_events_demo"})
+  - count(flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic="viewing_events_demo"})
 # Freshness p95 over the last 5 minutes
 histogram_quantile(0.95, sum by (le) (rate(trending_window_freshness_seconds_bucket[5m])))
 ```

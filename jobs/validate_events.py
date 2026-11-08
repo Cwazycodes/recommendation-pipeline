@@ -96,7 +96,9 @@ def main() -> None:
     env = StreamExecutionEnvironment.get_execution_environment(
         to_flink_configuration(job_settings(flink.checkpoint_dir))
     )
-    env.set_parallelism(1)
+    # The stages that handle each event: the Kafka source, validation and
+    # deduplication (make bench PARALLELISM=2; see docs/benchmarks.md).
+    env.set_parallelism(job.parallelism)
 
     source = (
         KafkaSource.builder()
@@ -136,6 +138,10 @@ def main() -> None:
 
     t_env = StreamTableEnvironment.create(env)
     t_env.get_config().set_local_timezone("UTC")
+    # Windowing, ranking and the trending sink run as one whatever the
+    # parallelism, so each window's rows reach the topic together, in one
+    # transaction, as the results writer expects (docs/design.md).
+    t_env.get_config().set("table.exec.resource.default-parallelism", "1")
 
     events_table = to_events_table(t_env, unique_events)
     events_table.print_schema()
@@ -146,6 +152,7 @@ def main() -> None:
         t_env.to_data_stream(trending)
         .map(to_trending_json, output_type=Types.STRING())
         .name("to-trending-json")
+        .set_parallelism(1)
         .sink_to(
             build_kafka_sink(
                 flink.kafka_bootstrap_servers, job.trending_topic, exactly_once=True
@@ -153,6 +160,7 @@ def main() -> None:
         )
         .name("trending-results-sink")
         .uid("trending-results-sink")
+        .set_parallelism(1)
     )
 
     env.execute("validate-viewing-events")

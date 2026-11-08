@@ -45,10 +45,10 @@ from realtime_recommendation_pipeline.settings import (
 )
 from realtime_recommendation_pipeline.tools.api_local import (
     call_handler,
+    print_response,
 )
 from realtime_recommendation_pipeline.tools.metrics_report import (
     MetricsError,
-    Source,
     prometheus_query,
     report,
 )
@@ -311,6 +311,7 @@ class WriterThread(threading.Thread):
         finally:
             consumer.close()
             server.shutdown()
+            server.server_close()
 
 
 class ProducerThread(threading.Thread):
@@ -339,11 +340,10 @@ def print_metrics(
 ) -> None:
     """The run's metrics: throughput and lag while producing, latency since."""
     url = settings.metrics.prometheus_url
-    source = Source(EVENTS_TOPIC, settings.flink.source_group_id)
     try:
         lines = report(
             prometheus_query(url),
-            source,
+            EVENTS_TOPIC,
             produced_from,
             produced_to,
             produced_from,
@@ -460,6 +460,7 @@ def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> Demo
         log(f"GET /trending?limit={settings.limit} on {PARTITION_KEY}:")
         demo_list = settings.dynamo.model_copy(update={"partition_key": PARTITION_KEY})
         response = call_handler(demo_list, str(settings.limit))
+        print_response(response)
         print_metrics(settings, say, produced_from, produced_to)
 
         return DemoResult(

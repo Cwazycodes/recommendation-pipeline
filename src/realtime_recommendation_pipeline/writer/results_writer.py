@@ -341,6 +341,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         # from its first row on the next start.
         consumer.close()
         server.shutdown()
+        server.server_close()
         logger.info("writer stopped")
 
 

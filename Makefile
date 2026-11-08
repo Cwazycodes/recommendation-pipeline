@@ -16,6 +16,11 @@ DEMO_DURATION ?= 120
 CHAOS_DRILLS ?= taskmanager kafka writer dynamodb
 MINUTES ?= 5
 TOPIC ?=
+RATES ?= 50 100 150 200 300 500 2000
+BENCH_DURATION ?= 120
+SEED ?= 42
+PARALLELISM ?= 1
+PARTITIONS ?= 6
 
 # Every host, topic and table is in .env (documented in .env.example). The
 # Python tools and the Flink containers read it themselves, so make never
@@ -24,7 +29,7 @@ TOPIC ?=
 .env:
 	cp .env.example .env
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics bench bench-report
 
 ## Show all available targets and their descriptions.
 help:
@@ -162,3 +167,13 @@ chaos: up
 metrics:
 	poetry run python -m realtime_recommendation_pipeline.tools.metrics_report \
 		--minutes $(MINUTES) $(if $(TOPIC),--topic $(TOPIC))
+
+## Benchmark live runs at each of RATES events/s for BENCH_DURATION s each (PARALLELISM, PARTITIONS, SEED) into docs/benchmarks/.
+bench: up
+	poetry run python -m realtime_recommendation_pipeline.tools.bench \
+		--rates $(RATES) --duration $(BENCH_DURATION) --seed $(SEED) \
+		--parallelism $(PARALLELISM) --partitions $(PARTITIONS)
+
+## Redraw the benchmark charts and print the results table from docs/benchmarks/.
+bench-report:
+	poetry run python -m realtime_recommendation_pipeline.tools.bench --report-only

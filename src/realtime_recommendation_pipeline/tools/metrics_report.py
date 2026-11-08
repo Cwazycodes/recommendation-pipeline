@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 import time
 import urllib.parse
@@ -16,12 +17,12 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from realtime_recommendation_pipeline.flink_jobs.event_time import (
     MAX_OUT_OF_ORDERNESS_S,
 )
 from realtime_recommendation_pipeline.settings import (
-    FlinkSettings,
     KafkaSettings,
     MetricsSettings,
     load,
@@ -30,6 +31,8 @@ from realtime_recommendation_pipeline.settings import (
 # An instant query evaluated at a time (epoch seconds): its value, or None
 # when Prometheus has no data for it.
 Query = Callable[[str, float], float | None]
+# The same for a query with one series per value of a label: label -> value.
+QueryByLabel = Callable[[str, float], dict[str, float]]
 
 # The job's Kafka source, viewing-events-source in jobs/validate_events.py;
 # Flink's reporter turns the hyphens into underscores.
@@ -37,13 +40,11 @@ OPERATOR = "flink_taskmanager_job_task_operator"
 SOURCE = 'operator_name="Source:_viewing_events_source"'
 RECORDS_READ = f"{OPERATOR}_numRecordsOut{{{SOURCE}}}"
 WATERMARK_LAG_MS = f"{OPERATOR}_watermarkLag{{{SOURCE}}}"
-# From kafka-exporter: each partition's end offset, and each group's lag.
+# From kafka-exporter: each partition's end offset.
 END_OFFSETS = "kafka_topic_partition_current_offset"
-GROUP_LAG = "kafka_consumergroup_lag"
-# The job commits its offsets when a checkpoint completes (every 10 s), so
-# its group's lag climbs between checkpoints. The lowest value in any 15 s is
-# the lag just after a checkpoint.
-SETTLED = "15s"
+# From the job's Kafka source: the offset of the last record it read in each
+# partition, -1 before the first.
+READ_OFFSETS = f"{OPERATOR}_KafkaSourceReader_topic_partition_currentOffset"
 FRESHNESS = "trending_window_freshness_seconds"
 DELIVERY = "trending_window_delivery_seconds"
 WINDOWS_WRITTEN = "trending_windows_written_total"
@@ -55,14 +56,6 @@ GROWING = 0.01
 
 class MetricsError(Exception):
     """Prometheus could not answer a query."""
-
-
-@dataclass(frozen=True)
-class Source:
-    """The topic the job reads, and the consumer group it commits offsets as."""
-
-    topic: str
-    group: str
 
 
 @dataclass(frozen=True)
@@ -104,26 +97,54 @@ class Latency:
         }
 
 
+def instant_query(
+    prometheus_url: str, expression: str, at: float, timeout_s: float
+) -> dict[str, Any]:
+    """The data of a Prometheus HTTP API instant query evaluated at a time."""
+    params = urllib.parse.urlencode({"query": expression, "time": f"{at:.3f}"})
+    url = f"{prometheus_url}/api/v1/query?{params}"
+    with urllib.request.urlopen(url, timeout=timeout_s) as response:
+        body = json.load(response)
+    if body.get("status") != "success":
+        raise MetricsError(f"{expression}: {body.get('error')}")
+
+    data: dict[str, Any] = body["data"]
+    return data
+
+
+def finite(text: str) -> float | None:
+    """A sample's value, or None for NaN and infinity."""
+    value = float(text)
+    return None if math.isnan(value) or math.isinf(value) else value
+
+
 def prometheus_query(prometheus_url: str, timeout_s: float = 10) -> Query:
     """A Query that asks the Prometheus HTTP API."""
 
     def query(expression: str, at: float) -> float | None:
-        params = urllib.parse.urlencode({"query": expression, "time": f"{at:.3f}"})
-        url = f"{prometheus_url}/api/v1/query?{params}"
-        with urllib.request.urlopen(url, timeout=timeout_s) as response:
-            body = json.load(response)
-        if body.get("status") != "success":
-            raise MetricsError(f"{expression}: {body.get('error')}")
-
-        data = body["data"]
+        data = instant_query(prometheus_url, expression, at, timeout_s)
         sample = data["result"] if data["resultType"] == "scalar" else None
         if data["resultType"] == "vector" and data["result"]:
             sample = data["result"][0]["value"]
-        if sample is None:
-            return None
 
-        value = float(sample[1])
-        return None if math.isnan(value) or math.isinf(value) else value
+        return None if sample is None else finite(sample[1])
+
+    return query
+
+
+def prometheus_query_by_label(
+    prometheus_url: str, label: str, timeout_s: float = 10
+) -> QueryByLabel:
+    """A QueryByLabel that asks the Prometheus HTTP API; NaN values are left out."""
+
+    def query(expression: str, at: float) -> dict[str, float]:
+        data = instant_query(prometheus_url, expression, at, timeout_s)
+        values = {
+            series["metric"].get(label, ""): finite(series["value"][1])
+            for series in data["result"]
+        }
+
+        return {key: value for key, value in values.items() if value is not None}
 
     return query
 
@@ -137,22 +158,36 @@ def per_second(total: float | None, seconds: float) -> float | None:
     return None if total is None else total / max(seconds, 1)
 
 
-def read_ingest(query: Query, source: Source, start: float, end: float) -> Ingest:
+def flink_label(value: str) -> str:
+    """A label value as Flink's reporter writes it: viewing_events_demo."""
+    return re.sub(r"[^a-zA-Z0-9:_]", "_", value)
+
+
+def read_lag(topic: str) -> str:
+    """Records on the topic the job has not read yet, summed over partitions:
+    each end offset minus the next offset to read (currentOffset + 1)."""
+    read = f'{READ_OFFSETS}{{topic="{flink_label(topic)}"}}'
+    return f'sum({END_OFFSETS}{{topic="{topic}"}}) - sum({read}) - count({read})'
+
+
+def read_ingest(query: Query, topic: str, start: float, end: float) -> Ingest:
     span = lookback(end - start)
-    topic = f'topic="{source.topic}"'
-    lag = f'sum({GROUP_LAG}{{consumergroup="{source.group}", {topic}}})'
-    settled = f"min_over_time({lag}[{SETTLED}:5s])"
+    lag = read_lag(topic)
+    # Kafka and Flink are scraped a moment apart, so a small lag can read
+    # below 0; the trend uses the raw values.
+    shown_lag = f"clamp_min({lag}, 0)"
 
     return Ingest(
         produced_per_s=per_second(
-            query(f"sum(increase({END_OFFSETS}{{{topic}}}[{span}]))", end), end - start
+            query(f'sum(increase({END_OFFSETS}{{topic="{topic}"}}[{span}]))', end),
+            end - start,
         ),
         events_per_s=per_second(
             query(f"sum(increase({RECORDS_READ}[{span}]))", end), end - start
         ),
-        lag_end=query(settled, end),
-        lag_max=query(f"max_over_time({lag}[{span}:5s])", end),
-        lag_slope_per_s=query(f"deriv(({settled})[{span}:5s])", end),
+        lag_end=query(shown_lag, end),
+        lag_max=query(f"max_over_time(({shown_lag})[{span}:5s])", end),
+        lag_slope_per_s=query(f"deriv(({lag})[{span}:5s])", end),
         watermark_delay_s=query(f"max({WATERMARK_LAG_MS}) / 1000", end),
     )
 
@@ -216,7 +251,7 @@ def format_report(
 
 def report(
     query: Query,
-    source: Source,
+    topic: str,
     ingest_from: float,
     ingest_to: float,
     latency_from: float,
@@ -224,7 +259,7 @@ def report(
 ) -> list[str]:
     """The report lines; ingest and latency can cover different stretches."""
     return format_report(
-        read_ingest(query, source, ingest_from, ingest_to),
+        read_ingest(query, topic, ingest_from, ingest_to),
         read_latency(query, latency_from, latency_to),
         min(ingest_from, latency_from),
         max(ingest_to, latency_to),
@@ -240,16 +275,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     prometheus_url = load(MetricsSettings).prometheus_url
-    source = Source(
-        args.topic or load(KafkaSettings).events_topic,
-        load(FlinkSettings).source_group_id,
-    )
+    topic = args.topic or load(KafkaSettings).events_topic
     end = time.time()
     start = end - args.minutes * 60
 
     try:
         query = prometheus_query(prometheus_url)
-        lines = report(query, source, start, end, start, end)
+        lines = report(query, topic, start, end, start, end)
     except (OSError, MetricsError) as exc:
         print(f"Could not read metrics from {prometheus_url}: {exc}", file=sys.stderr)
         sys.exit(1)
