@@ -33,7 +33,7 @@ TF_ARGS ?=
 .env:
 	cp .env.example .env
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics bench bench-report package-lambda tf-check tf-plan deploy destroy
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics bench bench-report package-lambda tf-check tf-plan deploy destroy bootstrap
 
 ## Show all available targets and their descriptions.
 help:
@@ -188,16 +188,24 @@ LAMBDA_BUILD := build/lambda
 # The Lambda runtime is the project's Python version (infra/terraform/lambda.tf).
 LAMBDA_PYTHON := $(shell cat .python-version)
 TF := terraform -chdir=infra/terraform
+BOOTSTRAP := terraform -chdir=infra/bootstrap
 # Terraform gets AWS_PROFILE's short-lived credentials from the AWS CLI, which
-# handles aws login and SSO profiles alike. AWS_PROFILE is then unset, because
-# Terraform would read the profile itself instead of the credentials.
-WITH_AWS := credentials=$$(aws configure export-credentials --profile $(AWS_PROFILE) --format env) \
-	&& eval "$$credentials" && unset AWS_PROFILE &&
+# handles aws login and SSO profiles alike. With AWS_PROFILE empty, as in the
+# deploy workflow, they are already in the environment. AWS_PROFILE is then
+# unset, because Terraform would read the profile itself instead.
+WITH_AWS := $(if $(AWS_PROFILE),credentials=$$(aws configure export-credentials --profile $(AWS_PROFILE) --format env) \
+	&& eval "$$credentials" &&) unset AWS_PROFILE &&
+# The state bucket make bootstrap created, named after the account
+# (infra/bootstrap/variables.tf).
+TF_INIT := account=$$(aws sts get-caller-identity --query Account --output text) \
+	&& $(TF) init -input=false -backend-config="bucket=recommendation-pipeline-tfstate-$$account"
 
 ## Build the API's Lambda package, build/lambda.zip: the handler's modules and the lambda dependency group.
 # Wheels are for the runtime: Linux x86_64, glibc 2.17 or older, the project's
 # Python. Fixed timestamps and file order make the same code give the same zip,
-# so Terraform only updates the function when something changed.
+# so Terraform only updates the function when something changed. Console
+# scripts (bin/) name the building machine's Python, so they and the RECORD
+# files that list them are left out: a laptop and CI build the same zip.
 package-lambda:
 	rm -rf $(LAMBDA_BUILD) build/lambda.zip
 	mkdir -p $(LAMBDA_BUILD)/realtime_recommendation_pipeline
@@ -208,24 +216,32 @@ package-lambda:
 		--python-version $(LAMBDA_PYTHON) --only-binary=:all:
 	cp -R src/realtime_recommendation_pipeline/{__init__.py,settings.py,api,common} \
 		$(LAMBDA_BUILD)/realtime_recommendation_pipeline/
+	rm -rf $(LAMBDA_BUILD)/bin
 	find $(LAMBDA_BUILD) -name __pycache__ -prune -exec rm -rf {} +
+	find $(LAMBDA_BUILD) -path '*.dist-info/RECORD' -delete
 	find $(LAMBDA_BUILD) -exec touch -t 202001010000 {} +
 	cd $(LAMBDA_BUILD) && find . -type f | LC_ALL=C sort | zip -q -X ../lambda.zip -@
 
 ## Check the Terraform is formatted and valid, without AWS access (CI runs this).
 tf-check:
-	$(TF) fmt -check -recursive
+	terraform fmt -check -recursive infra
 	$(TF) init -backend=false -input=false
 	$(TF) validate
+	$(BOOTSTRAP) init -backend=false -input=false
+	$(BOOTSTRAP) validate
 
 ## Show what make deploy would change in AWS (AWS_PROFILE, default rp; run aws login first).
 tf-plan: package-lambda
-	$(WITH_AWS) $(TF) init -input=false && $(TF) plan $(TF_ARGS)
+	$(WITH_AWS) $(TF_INIT) && $(TF) plan $(TF_ARGS)
 
 ## Create or update the AWS stack: table, Lambda, HTTP API, logs and IAM roles (asks first).
 deploy: package-lambda
-	$(WITH_AWS) $(TF) init -input=false && $(TF) apply $(TF_ARGS)
+	$(WITH_AWS) $(TF_INIT) && $(TF) apply $(TF_ARGS)
 
 ## Delete everything make deploy created (asks first).
 destroy: package-lambda
-	$(WITH_AWS) $(TF) init -input=false && $(TF) destroy $(TF_ARGS)
+	$(WITH_AWS) $(TF_INIT) && $(TF) destroy $(TF_ARGS)
+
+## Create the state bucket and GitHub's deploy role, once, with your own profile (infra/bootstrap; asks first).
+bootstrap:
+	$(WITH_AWS) $(BOOTSTRAP) init -input=false && $(BOOTSTRAP) apply $(TF_ARGS)
