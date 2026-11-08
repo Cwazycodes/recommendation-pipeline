@@ -103,7 +103,7 @@ The read path answers one question, "what is trending now?", so the table is des
 - **Idempotent writes:** the window is the key, so writing the same window again replaces it instead of adding a copy.
 - **Expiry:** `ttl` is `generated_at` plus 24 hours, in epoch seconds. It counts from when the list was written, not from `window_end`, because replayed or synthetic windows can already be days old. AWS deletes expired items lazily (typically within two days), so the latest-list query also filters on `#ttl > :now` and returns nothing rather than a stale list.
 - **Reserved words:** `ttl` and `items` are DynamoDB reserved words, so expressions refer to them through placeholders such as `#ttl`.
-- **One definition:** `infra/dynamodb/trending-table.json` is the only description of the table. `make db-init` creates it in DynamoDB Local, and the Terraform in RP-27 must read the same file so the two cannot drift.
+- **One definition:** `infra/dynamodb/trending-table.json` is the only description of the table. `make db-init` creates it in DynamoDB Local, and `infra/terraform` reads the same file, so the two cannot drift.
 - **Locally:** DynamoDB Local runs in Compose on port 8001 with `-sharedDb`, so every client sees one database whatever credentials or region it uses. Unlike AWS it deletes expired items within seconds.
 
 ### Checkpoints, restarts and exactly-once output
@@ -154,6 +154,19 @@ The job sets all of this itself (`flink_jobs/reliability.py`), so it travels wit
 - **Configuration:** `DYNAMODB_TABLE`, `DYNAMODB_PARTITION_KEY` and, locally, `DYNAMODB_ENDPOINT_URL` (see Configuration and logs). The DynamoDB resource is created once per Lambda container and reused across requests. Its client gives up quickly, with a 1 s connect timeout, a 2 s read timeout and 2 tries, instead of boto3's default 60 s read timeout, so a request fails within about 7 seconds and the Lambda timeout must be longer than that.
 - **Dependencies:** boto3, which the Lambda Python runtime includes, and pydantic-settings for its settings, which the deployment package must bundle. It imports nothing from Kafka or Flink, and a test checks that, so the package stays small.
 - **Testing:** unit tests call the handler with moto, on a table created from `infra/dynamodb/trending-table.json`, using an API Gateway HTTP API (payload 2.0) event fixture, `tests/fixtures/http_api_get_trending.json`. `make api-local LIMIT=5` builds the same kind of event and calls the handler against DynamoDB Local.
+
+### Deployment (Terraform)
+
+`infra/terraform` defines everything the pipeline runs in AWS, in one region, eu-west-2. Nothing is set up by hand in the console: `make deploy` builds the whole stack and `make destroy` deletes all of it. Kafka, Flink and the results writer still run locally.
+
+- **Table:** created from `infra/dynamodb/trending-table.json`, the file `make db-init` uses, so it has the same keys, on-demand billing and TTL on `ttl`.
+- **Read API:** a Lambda running `api/handler.py` on the project's Python version (`.python-version`, 3.11), behind an HTTP API with one route, `GET /trending`, using payload format 2.0. The URL is public, so the stage is throttled to 10 requests a second, with bursts of 20.
+- **Logs:** Terraform creates the Lambda's log group with 7-day retention, rather than letting Lambda create one that keeps logs forever and outlives `make destroy`.
+- **Least privilege:** the Lambda's role can only `dynamodb:Query` the table and write its own log streams. The writer's role can only `dynamodb:PutItem` to the table. The writer runs outside AWS, so the role trusts the account itself, and a profile with `source_profile` assumes it.
+- **Package:** `make package-lambda` builds `build/lambda.zip`, about 3 MB. It holds the handler's modules (`settings.py`, `api/`, `common/`) and the `lambda` dependency group (pydantic-settings), which `poetry export` lists and `pip install --target` installs as Linux x86_64 wheels for the runtime. boto3 comes with the runtime. Timestamps and file order are fixed, so the same code always gives the same zip, and Terraform only updates the function when the code changes.
+- **State:** local and gitignored (`terraform.tfstate`). One person deploys this stack, so an S3 backend with locking would only add a bucket that has to exist before the first deploy and survive `make destroy`. `.terraform.lock.hcl` is committed, so every machine uses the same provider version.
+- **Credentials:** `make tf-plan`, `make deploy` and `make destroy` get the short-lived credentials of `AWS_PROFILE` (default `rp`, from `aws login`) from the AWS CLI. No access keys are stored anywhere.
+- **CI:** `make tf-check` runs `terraform fmt -check` and `terraform validate` on every push, without AWS access.
 
 ### End-to-end demo
 

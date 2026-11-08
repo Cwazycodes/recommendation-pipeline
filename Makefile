@@ -21,6 +21,10 @@ BENCH_DURATION ?= 120
 SEED ?= 42
 PARALLELISM ?= 1
 PARTITIONS ?= 6
+# The AWS CLI profile for make tf-plan, deploy and destroy (aws login --profile rp).
+AWS_PROFILE ?= rp
+# Extra Terraform arguments, e.g. TF_ARGS=-auto-approve.
+TF_ARGS ?=
 
 # Every host, topic and table is in .env (documented in .env.example). The
 # Python tools and the Flink containers read it themselves, so make never
@@ -29,7 +33,7 @@ PARTITIONS ?= 6
 .env:
 	cp .env.example .env
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics bench bench-report
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics bench bench-report package-lambda tf-check tf-plan deploy destroy
 
 ## Show all available targets and their descriptions.
 help:
@@ -177,3 +181,51 @@ bench: up
 ## Redraw the benchmark charts and print the results table from docs/benchmarks/.
 bench-report:
 	poetry run python -m realtime_recommendation_pipeline.tools.bench --report-only
+
+# --- AWS (infra/terraform) ----------------------------------------------------
+
+LAMBDA_BUILD := build/lambda
+# The Lambda runtime is the project's Python version (infra/terraform/lambda.tf).
+LAMBDA_PYTHON := $(shell cat .python-version)
+TF := terraform -chdir=infra/terraform
+# Terraform gets AWS_PROFILE's short-lived credentials from the AWS CLI, which
+# handles aws login and SSO profiles alike. AWS_PROFILE is then unset, because
+# Terraform would read the profile itself instead of the credentials.
+WITH_AWS := credentials=$$(aws configure export-credentials --profile $(AWS_PROFILE) --format env) \
+	&& eval "$$credentials" && unset AWS_PROFILE &&
+
+## Build the API's Lambda package, build/lambda.zip: the handler's modules and the lambda dependency group.
+# Wheels are for the runtime: Linux x86_64, glibc 2.17 or older, the project's
+# Python. Fixed timestamps and file order make the same code give the same zip,
+# so Terraform only updates the function when something changed.
+package-lambda:
+	rm -rf $(LAMBDA_BUILD) build/lambda.zip
+	mkdir -p $(LAMBDA_BUILD)/realtime_recommendation_pipeline
+	poetry export --only lambda --format requirements.txt --output build/lambda-requirements.txt
+	poetry run python -m pip install --quiet --disable-pip-version-check --no-compile --target $(LAMBDA_BUILD) \
+		--requirement build/lambda-requirements.txt \
+		--platform manylinux2014_x86_64 --implementation cp \
+		--python-version $(LAMBDA_PYTHON) --only-binary=:all:
+	cp -R src/realtime_recommendation_pipeline/{__init__.py,settings.py,api,common} \
+		$(LAMBDA_BUILD)/realtime_recommendation_pipeline/
+	find $(LAMBDA_BUILD) -name __pycache__ -prune -exec rm -rf {} +
+	find $(LAMBDA_BUILD) -exec touch -t 202001010000 {} +
+	cd $(LAMBDA_BUILD) && find . -type f | LC_ALL=C sort | zip -q -X ../lambda.zip -@
+
+## Check the Terraform is formatted and valid, without AWS access (CI runs this).
+tf-check:
+	$(TF) fmt -check -recursive
+	$(TF) init -backend=false -input=false
+	$(TF) validate
+
+## Show what make deploy would change in AWS (AWS_PROFILE, default rp; run aws login first).
+tf-plan: package-lambda
+	$(WITH_AWS) $(TF) init -input=false && $(TF) plan $(TF_ARGS)
+
+## Create or update the AWS stack: table, Lambda, HTTP API, logs and IAM roles (asks first).
+deploy: package-lambda
+	$(WITH_AWS) $(TF) init -input=false && $(TF) apply $(TF_ARGS)
+
+## Delete everything make deploy created (asks first).
+destroy: package-lambda
+	$(WITH_AWS) $(TF) init -input=false && $(TF) destroy $(TF_ARGS)
