@@ -22,6 +22,18 @@ variable "lambda_zip" {
   default     = "../../build/lambda.zip"
 }
 
+variable "api_rate_limit" {
+  description = "Requests a second the API serves on average; the rest get 429 Too Many Requests."
+  type        = number
+  default     = 1
+}
+
+variable "api_burst_limit" {
+  description = "Requests the API serves at once before api_rate_limit applies."
+  type        = number
+  default     = 5
+}
+
 variable "log_retention_days" {
   description = "How long CloudWatch keeps the API's logs."
   type        = number

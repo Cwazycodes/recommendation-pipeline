@@ -28,8 +28,20 @@ Once per account, `make bootstrap` creates the Terraform state bucket and the ro
 
 ```bash
 make deploy    # builds the Lambda package, then creates the table, Lambda, HTTP API, logs and IAM roles
-curl "$(terraform -chdir=infra/terraform output -raw api_url)"
+curl "$(make -s api-url)"
 make destroy   # deletes all of it
 ```
 
 `make tf-plan` shows what `make deploy` would change without changing anything. Both ways share the state in S3, so either can update or delete what the other deployed.
+
+### Run the pipeline against AWS
+
+Kafka and Flink stay in Docker; the results writer writes to the table in AWS, and the deployed API serves what it wrote ([docs/design.md](docs/design.md), "Hybrid run"). It needs the deployed stack and an `rp-writer` profile for the writer's role:
+
+```bash
+make up && make topics
+make submit-job JOB=validate_events
+make writer-aws                           # in a second terminal; Ctrl-C stops it
+make produce RATE=20 DURATION=600 LIVE=1
+curl "$(make -s api-url)"                 # about 6 minutes in: the latest list
+```

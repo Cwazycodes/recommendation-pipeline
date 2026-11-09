@@ -9,6 +9,8 @@ DURATION ?= 60
 
 MALFORMED_RATE ?= 0.0
 DUP_RATE ?= 0.0
+# Stamp produced events with the time they are sent (make produce LIVE=1).
+LIVE ?=
 JOB_ARGS ?=
 SAVEPOINT ?=
 LIMIT ?= 10
@@ -21,8 +23,15 @@ BENCH_DURATION ?= 120
 SEED ?= 42
 PARALLELISM ?= 1
 PARTITIONS ?= 6
+# Where make bench saves its results, and make bench-aws its own.
+BENCH_DIR ?= docs/benchmarks
+BENCH_AWS_DIR ?= docs/benchmarks/dynamodb/aws
+# The one rate make bench-aws runs, events/s.
+AWS_BENCH_RATE ?= 100
 # The AWS CLI profile for make tf-plan, deploy and destroy (aws login --profile rp).
 AWS_PROFILE ?= rp
+# The results writer's profile, which assumes its role (infra/terraform/writer.tf).
+AWS_WRITER_PROFILE ?= rp-writer
 # Extra Terraform arguments, e.g. TF_ARGS=-auto-approve.
 TF_ARGS ?=
 
@@ -33,7 +42,7 @@ TF_ARGS ?=
 .env:
 	cp .env.example .env
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics bench bench-report package-lambda tf-check tf-plan deploy destroy bootstrap
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics bench bench-report writer-aws bench-aws package-lambda tf-check tf-plan deploy destroy bootstrap api-url
 
 ## Show all available targets and their descriptions.
 help:
@@ -100,13 +109,14 @@ topics:
 logs:
 	docker compose logs -f kafka kafka-ui
 
-## Produce synthetic events to local Kafka.
+## Produce synthetic events to local Kafka (LIVE=1 stamps them with the time they are sent).
 produce:
 	poetry run python -m realtime_recommendation_pipeline.producer.kafka_producer \
 		--rate $(RATE) \
 		--duration $(DURATION) \
 		--malformed-rate $(MALFORMED_RATE) \
-		--dup-rate $(DUP_RATE)
+		--dup-rate $(DUP_RATE) \
+		$(if $(LIVE),--live)
 
 ## Run integration tests (Kafka and DynamoDB Local in Docker).
 test-int:
@@ -144,6 +154,11 @@ db-smoke:
 writer:
 	poetry run python -m realtime_recommendation_pipeline.writer.results_writer
 
+## Write trending-results windows to DynamoDB in AWS instead, as the writer's role (AWS_WRITER_PROFILE).
+writer-aws:
+	DYNAMODB_ENDPOINT_URL= AWS_PROFILE=$(AWS_WRITER_PROFILE) \
+		poetry run python -m realtime_recommendation_pipeline.writer.results_writer
+
 ## Check the table holds one correct item per window on trending-results.
 check-writer:
 	poetry run python -m realtime_recommendation_pipeline.tools.check_writer
@@ -172,15 +187,22 @@ metrics:
 	poetry run python -m realtime_recommendation_pipeline.tools.metrics_report \
 		--minutes $(MINUTES) $(if $(TOPIC),--topic $(TOPIC))
 
-## Benchmark live runs at each of RATES events/s for BENCH_DURATION s each (PARALLELISM, PARTITIONS, SEED) into docs/benchmarks/.
+## Benchmark live runs at each of RATES events/s for BENCH_DURATION s each (PARALLELISM, PARTITIONS, SEED) into BENCH_DIR.
 bench: up
 	poetry run python -m realtime_recommendation_pipeline.tools.bench \
 		--rates $(RATES) --duration $(BENCH_DURATION) --seed $(SEED) \
-		--parallelism $(PARALLELISM) --partitions $(PARTITIONS)
+		--parallelism $(PARALLELISM) --partitions $(PARTITIONS) --out-dir $(BENCH_DIR)
 
-## Redraw the benchmark charts and print the results table from docs/benchmarks/.
+## Redraw the benchmark charts and print the results table from BENCH_DIR (default docs/benchmarks/).
 bench-report:
-	poetry run python -m realtime_recommendation_pipeline.tools.bench --report-only
+	poetry run python -m realtime_recommendation_pipeline.tools.bench --report-only --out-dir $(BENCH_DIR)
+
+## Benchmark one run at AWS_BENCH_RATE events/s with the writer on DynamoDB in AWS (AWS_WRITER_PROFILE), into BENCH_AWS_DIR.
+bench-aws: up
+	DYNAMODB_ENDPOINT_URL= AWS_PROFILE=$(AWS_WRITER_PROFILE) \
+		poetry run python -m realtime_recommendation_pipeline.tools.bench \
+		--rates $(AWS_BENCH_RATE) --duration $(BENCH_DURATION) --seed $(SEED) \
+		--parallelism $(PARALLELISM) --partitions $(PARTITIONS) --out-dir $(BENCH_AWS_DIR)
 
 # --- AWS (infra/terraform) ----------------------------------------------------
 
@@ -223,11 +245,14 @@ package-lambda:
 	cd $(LAMBDA_BUILD) && find . -type f | LC_ALL=C sort | zip -q -X ../lambda.zip -@
 
 ## Check the Terraform is formatted and valid, without AWS access (CI runs this).
+# validate needs the providers: a fresh checkout, as in CI, installs them with
+# init -backend=false. Where make deploy has already run, they are installed,
+# and init would read the state in S3, which needs AWS credentials.
 tf-check:
 	terraform fmt -check -recursive infra
-	$(TF) init -backend=false -input=false
+	test -d infra/terraform/.terraform || $(TF) init -backend=false -input=false
 	$(TF) validate
-	$(BOOTSTRAP) init -backend=false -input=false
+	test -d infra/bootstrap/.terraform || $(BOOTSTRAP) init -backend=false -input=false
 	$(BOOTSTRAP) validate
 
 ## Show what make deploy would change in AWS (AWS_PROFILE, default rp; run aws login first).
@@ -241,6 +266,10 @@ deploy: package-lambda
 ## Delete everything make deploy created (asks first).
 destroy: package-lambda
 	$(WITH_AWS) $(TF_INIT) && $(TF) destroy $(TF_ARGS)
+
+## Print the deployed API's URL, e.g. curl "$(make -s api-url)"; it reads the S3 state, so it uses AWS_PROFILE too.
+api-url:
+	@$(WITH_AWS) $(TF_INIT) >/dev/null && $(TF) output -raw api_url && echo
 
 ## Create the state bucket and GitHub's deploy role, once, with your own profile (infra/bootstrap; asks first).
 bootstrap:

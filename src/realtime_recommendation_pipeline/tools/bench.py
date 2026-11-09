@@ -87,6 +87,7 @@ RESULT_COLUMNS = [
     "watermark_delay_s", "windows",
     *(f"{kind}_{p}_s" for kind in ("freshness", "processing", "delivery")
       for p in PERCENTILES),
+      *(f"write_{p}_ms" for p in PERCENTILES),
     "busiest_task", "busiest_task_busy_ms_per_s",
 ]  # fmt: skip
 TASK_COLUMNS = [
@@ -177,6 +178,13 @@ def result_row(
         )
         for p, q in zip(PERCENTILES, QUANTILES, strict=True)
     }
+    # Milliseconds: a put takes a few of them, below what 2 decimals of a
+    # second show.
+    write_ms = {q: None if s is None else s * 1000 for q, s in latency.write.items()}
+    write = {
+        f"write_{p}_ms": cell(write_ms.get(q))
+        for p, q in zip(PERCENTILES, QUANTILES, strict=True)
+    }
 
     return {
         "parallelism": str(run.parallelism),
@@ -194,6 +202,7 @@ def result_row(
         "watermark_delay_s": cell(ingest.watermark_delay_s),
         "windows": cell(None if latency.windows is None else round(latency.windows)),
         **percentiles,
+        **write,
         "busiest_task": busiest,
         "busiest_task_busy_ms_per_s": (
             cell(tasks[busiest].busy_ms_per_s) if busiest else ""
@@ -382,13 +391,14 @@ def markdown_table(results: Sequence[Row]) -> list[str]:
     header = (
         "| Parallelism | Partitions | Rate (events/s) | Produced/s | Read/s "
         "| Lag at end | Lag trend | Windows | Processing p50 / p95 / p99 (s) "
-        "| Busiest task (busy ms/s) |"
+        "| DynamoDB put p50 / p95 / p99 (ms) | Busiest task (busy ms/s) |"
     )
-    lines = [header, "|---:|---:|---:|---:|---:|---:|---|---:|---|---|"]
+    lines = [header, "|---:|---:|---:|---:|---:|---:|---|---:|---|---|---|"]
     for row in results:
         processing = " / ".join(
             as_text(number(row, f"processing_{p}_s"), 1) for p in PERCENTILES
         )
+        put = " / ".join(as_text(number(row, f"write_{p}_ms")) for p in PERCENTILES)
         busiest = row["busiest_task"] or "n/a"
         busy = as_text(number(row, "busiest_task_busy_ms_per_s"))
         lines.append(
@@ -396,7 +406,7 @@ def markdown_table(results: Sequence[Row]) -> list[str]:
             f"| {as_text(number(row, 'rate'))} | {as_text(number(row, 'produced_per_s'))} "
             f"| {as_text(number(row, 'read_per_s'))} | {as_text(number(row, 'lag_end'))} "
             f"| {row['lag_trend']} | {as_text(number(row, 'windows'))} | {processing} "
-            f"| {busiest} ({busy}) |"
+            f"| {put} | {busiest} ({busy}) |"
         )
 
     lines.append("")
@@ -658,13 +668,19 @@ def run_bench(
     out_dir: Path = OUT_DIR,
     say: Callable[[str], None] = show,
 ) -> None:
-    say("Waiting for Kafka, Flink and DynamoDB Local")
+    say("Waiting for Kafka, Flink and DynamoDB")
     wait_for_services(settings)
     dynamodb = dynamodb_resource(settings.dynamodb_endpoint)
-    create_table_if_missing(
-        dynamodb.meta.client, load_table_definition(TABLE_DEFINITION)
-    )
+    # In AWS, Terraform made the table (infra/terraform), and the writer's
+    # role may only put items in it.
+    if settings.dynamodb_endpoint:
+        create_table_if_missing(
+            dynamodb.meta.client, load_table_definition(TABLE_DEFINITION)
+        )
     specs = machine_specs(settings.flink_url)
+    specs["dynamodb"] = settings.dynamodb_endpoint or (
+        f"AWS {dynamodb.meta.client.meta.region_name}"
+    )
     (out_dir / "machine.json").parent.mkdir(parents=True, exist_ok=True)
     (out_dir / "machine.json").write_text(json.dumps(specs, indent=2) + "\n")
 
@@ -681,16 +697,20 @@ def run_bench(
         say(
             f"  Read {as_text(number(result, 'read_per_s'))} events/s, lag "
             f"{result['lag_trend']}, processing p95 "
-            f"{as_text(number(result, 'processing_p95_s'), 1)} s, busiest task "
+            f"{as_text(number(result, 'processing_p95_s'), 1)} s, DynamoDB put p95 "
+            f"{as_text(number(result, 'write_p95_ms'))} ms, busiest task "
             f"{result['busiest_task'] or 'n/a'}"
         )
 
 
 def report(out_dir: Path = OUT_DIR, say: Callable[[str], None] = show) -> None:
-    for path in draw_charts(out_dir):
-        say(f"Drew {path.relative_to(REPO_ROOT)}")
-    say("")
-    for line in markdown_table(read_rows(out_dir / "results.csv")):
+    results = read_rows(out_dir / "results.csv")
+    # The charts compare rates, so a single rate gets the table only.
+    if len({row["rate"] for row in results}) > 1:
+        for path in draw_charts(out_dir):
+            say(f"Drew {path.relative_to(REPO_ROOT)}")
+        say("")
+    for line in markdown_table(results):
         say(line)
 
 
@@ -706,7 +726,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="draw the charts and print the table from the saved results",
     )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=OUT_DIR,
+        help="where the results are saved (default: docs/benchmarks)",
+    )
     args = parser.parse_args(argv)
+    out_dir = args.out_dir.resolve()
 
     if not args.report_only:
         settings = DemoSettings.from_env()
@@ -715,14 +742,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             for rate in args.rates
         ]
         try:
-            run_bench(settings, runs)
+            run_bench(settings, runs, out_dir)
         except (DemoError, MetricsError, OSError) as exc:
             print(f"Benchmark failed: {exc}", file=sys.stderr)
             sys.exit(1)
         except KeyboardInterrupt:
             sys.exit(130)
 
-    report()
+    report(out_dir)
 
 
 if __name__ == "__main__":

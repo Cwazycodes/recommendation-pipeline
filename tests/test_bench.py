@@ -14,6 +14,7 @@ from realtime_recommendation_pipeline.tools.bench import (
     merge,
     read_rows,
     read_task_times,
+    report,
     result_row,
     save_run,
     summarise,
@@ -93,6 +94,7 @@ def test_a_run_is_one_row_of_results_and_a_row_per_task() -> None:
         windows=6.4,
         freshness={0.5: 40.25, 0.95: 44.0, 0.99: None},
         delivery={0.5: 2.0, 0.95: 2.5, 0.99: 2.5},
+        write={0.5: 0.0123, 0.95: 0.0385, 0.99: None},
     )
     tasks = {
         "deduplicate-events, to-event-rows": TaskTime(998.0, None),
@@ -111,6 +113,11 @@ def test_a_run_is_one_row_of_results_and_a_row_per_task() -> None:
     assert row["windows"] == "6"
     assert row["processing_p50_s"] == "10.25"
     assert row["processing_p99_s"] == ""
+    assert (row["write_p50_ms"], row["write_p95_ms"], row["write_p99_ms"]) == (
+        "12.3",
+        "38.5",
+        "",
+    )
     assert row["busiest_task"] == "deduplicate-events, to-event-rows"
     assert row["busiest_task_busy_ms_per_s"] == "998"
     assert task_rows(RUN, tasks)[1] == {
@@ -198,7 +205,7 @@ def test_results_print_as_a_markdown_table() -> None:
     assert lines[0].startswith("| Parallelism | Partitions | Rate (events/s) |")
     assert lines[2] == (
         "| 1 | 6 | 100 | n/a | 100 | n/a | steady | n/a | 6.2 / 6.2 / 6.2 "
-        "| deduplicate-events, to-event-rows (990) |"
+        "| n/a / n/a / n/a | deduplicate-events, to-event-rows (990) |"
     )
     one = (
         "- parallelism 1, 6 partitions: sustained 149 events/s "
@@ -232,3 +239,13 @@ def test_charts_are_drawn_from_the_saved_results(tmp_path: Path) -> None:
 
 def test_no_saved_results_draw_no_charts(tmp_path: Path) -> None:
     assert draw_charts(tmp_path) == []
+
+
+def test_a_single_rate_gets_the_table_without_charts(tmp_path: Path) -> None:
+    save_run(tmp_path, result(1, 100, 99.5, "steady", 6.2), [])
+    lines: list[str] = []
+
+    report(tmp_path, say=lines.append)
+
+    assert list(tmp_path.glob("*.png")) == []
+    assert lines[0].startswith("| Parallelism | Partitions |")

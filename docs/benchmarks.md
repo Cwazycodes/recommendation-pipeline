@@ -93,6 +93,17 @@ Sustained throughput rose by a third, from 150 to 201 events/s, and what the job
 - Try PyFlink's bundle and state cache settings (`python.fn-execution.bundle.size`, `python.state.cache-size`), given the steps of 1,000 records.
 - Add a second TaskManager to go past parallelism 2.
 
+## DynamoDB in AWS
+
+The same benchmark, once, with the results writer on the real table in eu-west-2 instead of DynamoDB Local (`make bench-aws`), next to a local run at the same settings a few minutes earlier (`make bench RATES=100 BENCH_DIR=docs/benchmarks/dynamodb/local`). Kafka and Flink stay on the laptop, and the writer uses its own role, which can only put items. The results are in [benchmarks/dynamodb/](benchmarks/dynamodb/).
+
+| DynamoDB | Read/s | Lag trend | Processing p50 / p95 / p99 (s) | DynamoDB put p50 / p95 / p99 (ms) |
+|---|---:|---|---|---|
+| Local, in Docker | LOCAL_READ | LOCAL_TREND | LOCAL_PROCESSING | LOCAL_PUT |
+| AWS, eu-west-2 | AWS_READ | AWS_TREND | AWS_PROCESSING | AWS_PUT |
+
+Only the put time changes: LOCAL_PUT_P50 ms at p50 locally and AWS_PUT_P50 ms in AWS, the round trip from the laptop to London. Throughput, lag and processing latency stay the same within the run-to-run noise above, because the writer puts one item per window, every 10 seconds, and even the slower put is a few hundredths of the checkpoint wait that makes up most of delivery. DynamoDB on demand takes thousands of writes a second, so the table would only matter to a writer that wrote far more often.
+
 ## Caveats
 
 - **One run per rate.** Run-to-run differences are 10 to 20%. An earlier run of this benchmark on the same laptop kept up at 300 events/s with parallelism 2 (294 events/s read), where this one fell behind (243), so the breaking point at parallelism 2 is somewhere between 200 and 300 events/s. The overloaded runs at parallelism 2 read anywhere between 232 and 302 events/s, so smaller differences mean nothing.

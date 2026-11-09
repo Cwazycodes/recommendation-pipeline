@@ -246,10 +246,13 @@ class ResultsWriter:
         """One put_item, stamped with written_at: when this try is made.
 
         item gets written_at only once the put succeeds, so a dead-lettered
-        item never says it was written.
+        item never says it was written. How long the put took is measured
+        separately: written_at is taken before it.
         """
         written_at = millis_text(self.now())
+        started = time.perf_counter()
         put_window(self.table, {**item, "written_at": written_at})
+        self.metrics.write.observe(time.perf_counter() - started)
         item["written_at"] = written_at
 
     def commit(self) -> None:
