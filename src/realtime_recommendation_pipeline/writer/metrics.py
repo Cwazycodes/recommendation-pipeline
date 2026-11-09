@@ -25,6 +25,12 @@ FRESHNESS_BUCKETS = (
 DELIVERY_BUCKETS = (
     0.25, *(step / 2 for step in range(1, 25)), 15, 20, 30, 60, 120,
 )  # fmt: skip
+# Seconds for one window's put_item: milliseconds against DynamoDB Local, tens
+# of milliseconds against DynamoDB in AWS across the internet.
+WRITE_BUCKETS = (
+    0.002, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1, 0.15, 0.25,
+    0.5, 1, 2.5,
+)  # fmt: skip
 
 
 class WriterMetrics:
@@ -42,6 +48,12 @@ class WriterMetrics:
             "trending_window_delivery_seconds",
             "written_at minus generated_at (when Flink emitted the window)",
             buckets=DELIVERY_BUCKETS,
+            registry=self.registry,
+        )
+        self.write = Histogram(
+            "trending_window_write_seconds",
+            "How long each successful put_item of a window took",
+            buckets=WRITE_BUCKETS,
             registry=self.registry,
         )
         self.written = Counter(

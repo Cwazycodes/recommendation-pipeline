@@ -182,6 +182,9 @@ def wait_for_services(settings: DemoSettings) -> None:
         f"Flink at {settings.flink_url} has no free task slot",
         lambda: flink_request(f"{settings.flink_url}/overview")["slots-available"] > 0,
     )
+    # DynamoDB in AWS is not checked: the writer's role may only put items.
+    if settings.dynamodb_endpoint is None:
+        return
     client = dynamodb_resource(settings.dynamodb_endpoint).meta.client
     wait_until(
         f"DynamoDB Local is not reachable at {settings.dynamodb_endpoint}",
@@ -359,6 +362,11 @@ def print_metrics(
 
 def run_demo(settings: DemoSettings, say: Callable[[str], None] = print) -> DemoResult:
     """Run the pipeline end to end and return what reached the API."""
+    if settings.dynamodb_endpoint is None:
+        raise DemoError(
+            "make demo runs on DynamoDB Local (DYNAMODB_ENDPOINT_URL). For DynamoDB "
+            "in AWS, use make writer-aws or make bench-aws (docs/design.md)"
+        )
     started = time.monotonic()
 
     def log(message: str) -> None:

@@ -122,6 +122,17 @@ def test_latency_percentiles_come_from_the_writer_histograms() -> None:
     assert latency.delivery == {0.5: 4.0, 0.95: 4.0, 0.99: 4.0}
 
 
+def test_put_times_come_from_the_write_histogram_in_milliseconds() -> None:
+    query = fake_prometheus({"trending_window_write_seconds_bucket": 0.0123})
+    ingest = Ingest(None, None, None, None, None, None)
+
+    latency = read_latency(query, START, END)
+    lines = format_report(ingest, latency, START, END)
+
+    assert latency.write == {0.5: 0.0123, 0.95: 0.0123, 0.99: 0.0123}
+    assert lines[-1] == "  DynamoDB put     p50   12 ms  p95   12 ms  p99   12 ms"
+
+
 def test_report_shows_missing_numbers_as_not_available() -> None:
     ingest = Ingest(None, 49.6, 12.0, 340.0, None, None)
     latency = Latency(None, {0.5: 37.0, 0.95: None, 0.99: None}, {})

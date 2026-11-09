@@ -15,7 +15,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -47,6 +47,7 @@ END_OFFSETS = "kafka_topic_partition_current_offset"
 READ_OFFSETS = f"{OPERATOR}_KafkaSourceReader_topic_partition_currentOffset"
 FRESHNESS = "trending_window_freshness_seconds"
 DELIVERY = "trending_window_delivery_seconds"
+WRITE = "trending_window_write_seconds"
 WINDOWS_WRITTEN = "trending_windows_written_total"
 
 QUANTILES = (0.5, 0.95, 0.99)
@@ -87,6 +88,8 @@ class Latency:
     windows: float | None
     freshness: dict[float, float | None]
     delivery: dict[float, float | None]
+    # How long the DynamoDB put of each window took.
+    write: dict[float, float | None] = field(default_factory=dict)
 
     @property
     def processing(self) -> dict[float, float | None]:
@@ -206,6 +209,7 @@ def read_latency(query: Query, start: float, end: float) -> Latency:
         windows=query(f"sum(increase({WINDOWS_WRITTEN}[{span}]))", end),
         freshness={q: quantile(query, FRESHNESS, q, span, end) for q in QUANTILES},
         delivery={q: quantile(query, DELIVERY, q, span, end) for q in QUANTILES},
+        write={q: quantile(query, WRITE, q, span, end) for q in QUANTILES},
     )
 
 
@@ -213,9 +217,16 @@ def number(value: float | None, unit: str = "", digits: int = 1) -> str:
     return "n/a" if value is None else f"{value:.{digits}f}{unit}"
 
 
-def percentiles(values: dict[float, float | None]) -> str:
+def percentiles(
+    values: dict[float, float | None],
+    unit: str = " s",
+    scale: float = 1,
+    digits: int = 1,
+) -> str:
     return "  ".join(
-        f"p{round(q * 100)} {number(value, ' s'):>7}" for q, value in values.items()
+        f"p{round(q * 100)} "
+        f"{number(None if value is None else value * scale, unit, digits):>7}"
+        for q, value in values.items()
     )
 
 
@@ -246,6 +257,7 @@ def format_report(
         f"  Freshness        {percentiles(latency.freshness)}",
         f"  Processing       {percentiles(latency.processing)}  (freshness - {bound} s)",
         f"  Delivery         {percentiles(latency.delivery)}",
+        f"  DynamoDB put     {percentiles(latency.write, ' ms', 1000, 0)}",
     ]
 
 

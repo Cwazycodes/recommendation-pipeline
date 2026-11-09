@@ -22,10 +22,12 @@ resource "aws_apigatewayv2_stage" "default" {
   name        = "$default"
   auto_deploy = true
 
-  # The URL is public, so cap the request rate and with it the cost of abuse.
+  # The URL is public, so the request rate is capped: at 1 a second, at most
+  # about 2.6 million requests a month reach the Lambda, which keeps the
+  # Lambda, DynamoDB and log costs to a few dollars (docs/design.md).
   default_route_settings {
-    throttling_rate_limit  = 10
-    throttling_burst_limit = 20
+    throttling_rate_limit  = var.api_rate_limit
+    throttling_burst_limit = var.api_burst_limit
   }
 }
 

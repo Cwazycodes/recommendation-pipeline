@@ -52,9 +52,13 @@ Flink's `watermarkLag` (now minus the source's watermark) shows the watermark de
 
 **`written_at − generated_at`**: from Flink emitting a window (the latest `emitted_at` of its rows) to its item being stored. It is the part of processing latency after Flink: the checkpoint commit, the writer and DynamoDB.
 
+### DynamoDB put time
+
+How long the writer's `put_item` of one window took, for the tries that succeeded. `written_at` is stamped just before the put, so freshness and delivery leave it out; this is the one number that shows where the table is. Against DynamoDB Local it is a few milliseconds; against DynamoDB in AWS it adds the round trip from the laptop to eu-west-2.
+
 ### Percentiles
 
-p50, p95 and p99 are taken over the windows written in a stretch of time, one sample per window. They come from the writer's Prometheus histograms (`histogram_quantile`), which estimate each percentile to within one bucket: 0.5 s from 30 to 45 s of freshness, and from 0 to 12 s of delivery. A 2-minute demo writes about 10 windows, so its p99 is close to its slowest window. Exact values for each window are in the item's `written_at` and in the writer's `wrote window` log lines (`freshness_s`).
+p50, p95 and p99 are taken over the windows written in a stretch of time, one sample per window. They come from the writer's Prometheus histograms (`histogram_quantile`), which estimate each percentile to within one bucket: 0.5 s from 30 to 45 s of freshness, from 0 to 12 s of delivery, and 5 to 10 ms of put time below 50 ms. A 2-minute demo writes about 10 windows, so its p99 is close to its slowest window. Exact values for each window are in the item's `written_at` and in the writer's `wrote window` log lines (`freshness_s`).
 
 The target in design.md section 6, p95 of 30 seconds or less, is checked against processing latency. Freshness cannot be below the 30-second watermark delay, so it could never meet that target.
 
@@ -68,6 +72,7 @@ The target in design.md section 6, p95 of 30 seconds or less, is checked against
 | Watermark delay | `flink_taskmanager_job_task_operator_watermarkLag{...}` (ms), same source | Flink |
 | Freshness | `trending_window_freshness_seconds` (histogram) | the results writer, `METRICS_WRITER_PORT` (9464) |
 | Delivery latency | `trending_window_delivery_seconds` (histogram) | the results writer |
+| DynamoDB put time | `trending_window_write_seconds` (histogram) | the results writer |
 | Windows written, dead-lettered | `trending_windows_written_total`, `trending_windows_dead_lettered_total` | the results writer |
 
 Flink's reporter replaces the hyphens in operator names and topics with underscores, so the source `viewing-events-source` is `Source:_viewing_events_source` and its offsets for `viewing-events-demo` have `topic="viewing_events_demo"`.

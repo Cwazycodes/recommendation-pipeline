@@ -555,6 +555,8 @@ def test_each_window_written_is_measured() -> None:
     assert sample("trending_window_freshness_seconds_bucket", {"le": "38.0"}) == 0
     assert sample("trending_window_freshness_seconds_bucket", {"le": "38.5"}) == 1
     assert sample("trending_window_delivery_seconds_sum") == 7.5
+    # The put itself is timed separately: written_at is taken before it.
+    assert sample("trending_window_write_seconds_count") == 1
 
 
 def test_dead_lettered_windows_are_counted_not_measured() -> None:
@@ -575,6 +577,7 @@ def test_dead_lettered_windows_are_counted_not_measured() -> None:
     assert sample("trending_windows_dead_lettered_total") == 1
     assert sample("trending_windows_written_total") == 0
     assert sample("trending_window_freshness_seconds_count") == 0
+    assert sample("trending_window_write_seconds_count") == 0
 
 
 @pytest.fixture
