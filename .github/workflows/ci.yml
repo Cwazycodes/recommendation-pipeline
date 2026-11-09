@@ -46,6 +46,18 @@ jobs:
           path: coverage.xml
           if-no-files-found: warn
 
+      # For the README's coverage badge. The repository is public, so Codecov
+      # takes the upload without a token: the job needs no secret and no OIDC
+      # token, which would let code running in CI on main assume the AWS
+      # deploy role. A failed upload does not fail the job.
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage.xml
+          disable_search: true
+          fail_ci_if_error: false
+
   flink:
     name: Flink tests against the oracle
     runs-on: ubuntu-latest

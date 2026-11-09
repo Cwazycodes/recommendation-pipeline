@@ -12,7 +12,7 @@ The primary objective is to demonstrate reliable streaming-data engineering, inc
 
 ## 2. Architecture
 
-The project uses a hybrid local/cloud architecture.
+The project uses a hybrid local/cloud architecture. The README has a diagram, and [adr/](adr/README.md) records the main decisions and their trade-offs.
 
 - **Python:** synthetic event generation, test utilities, and performance measurement.
 - **Kafka:** event ingestion and buffering.
