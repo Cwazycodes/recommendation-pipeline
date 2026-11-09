@@ -46,11 +46,11 @@ TF_ARGS ?=
 
 ## Show all available targets and their descriptions.
 help:
-	@awk 'BEGIN {FS = ":.*## "} \
-		/^## / { description = substr($$0, 4); next } \
-		/^[a-zA-Z0-9_-]+:.*$$/ { \
+	@awk '/^## / { description = substr($$0, 4); next } \
+		/^[a-zA-Z0-9_-]+:/ { \
+			split($$0, target, ":"); \
 			if (description != "") \
-				printf "  make %-12s %s\n", $$1, description; \
+				printf "  make %-16s %s\n", target[1], description; \
 			description = "" \
 		}' $(MAKEFILE_LIST)
 

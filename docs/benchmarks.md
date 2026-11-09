@@ -99,10 +99,10 @@ The same benchmark, once, with the results writer on the real table in eu-west-2
 
 | DynamoDB | Read/s | Lag trend | Processing p50 / p95 / p99 (s) | DynamoDB put p50 / p95 / p99 (ms) |
 |---|---:|---|---|---|
-| Local, in Docker | LOCAL_READ | LOCAL_TREND | LOCAL_PROCESSING | LOCAL_PUT |
-| AWS, eu-west-2 | AWS_READ | AWS_TREND | AWS_PROCESSING | AWS_PUT |
+| Local, in Docker | 100 | steady | 7.2 / 22.8 / 24.6 | 37 / 775 / 955 |
+| AWS, eu-west-2 | 100 | steady | 12.8 / 13.4 / 13.5 | 28 / 388 / 478 |
 
-Only the put time changes: LOCAL_PUT_P50 ms at p50 locally and AWS_PUT_P50 ms in AWS, the round trip from the laptop to London. Throughput, lag and processing latency stay the same within the run-to-run noise above, because the writer puts one item per window, every 10 seconds, and even the slower put is a few hundredths of the checkpoint wait that makes up most of delivery. DynamoDB on demand takes thousands of writes a second, so the table would only matter to a writer that wrote far more often.
+Moving the table to AWS changed nothing that matters. A put took 37 ms at the median against DynamoDB Local and 28 ms against DynamoDB in London: DynamoDB Local is a Java process in the same memory-starved Docker VM as Kafka and Flink, so it is no faster than the real thing, and its slowest puts were slower (p95 775 ms against 388 ms). With 9 windows a run, p95 and p99 are the slowest one or two puts. Throughput and lag are the same. Processing latency differs (p50 7.2 s against 12.8 s) because of delivery, which depends on where the 10-second checkpoints fall relative to the windows and varies from run to run ([metrics.md](metrics.md)): its median was 2.3 s in the local run and 5.3 s in the AWS one. A window is one put every 10 seconds, so even a 400 ms put is small next to the checkpoint wait, and DynamoDB on demand takes thousands of writes a second; the table would only matter to a writer that wrote far more often.
 
 ## Caveats
 
