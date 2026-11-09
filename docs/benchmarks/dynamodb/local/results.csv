@@ -1,0 +1,2 @@
+parallelism,partitions,rate,duration_s,seed,started_at,produced_per_s,read_per_s,lag_end,lag_max,lag_slope_per_s,lag_trend,watermark_delay_s,windows,freshness_p50_s,freshness_p95_s,freshness_p99_s,processing_p50_s,processing_p95_s,processing_p99_s,delivery_p50_s,delivery_p95_s,delivery_p99_s,write_p50_ms,write_p95_ms,write_p99_ms,busiest_task,busiest_task_busy_ms_per_s
+1,6,100,120,42,2026-11-09T19:25:23Z,99.95,100.27,0,0,-0.22,steady,30.27,9,37.25,52.75,54.55,7.25,22.75,24.55,2.25,2.77,2.96,37,775,955,"deduplicate-events, to-event-rows",753.2

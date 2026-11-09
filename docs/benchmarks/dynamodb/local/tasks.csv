@@ -1,0 +1,5 @@
+parallelism,partitions,rate,task,busy_ms_per_s,backpressured_ms_per_s
+1,6,100,GlobalWindowAggregate,10.3,0
+1,6,100,WindowRank,52.05,0
+1,6,100,"deduplicate-events, to-event-rows",753.2,0
+1,6,100,viewing-events-source,250.8,17.85
