@@ -57,6 +57,10 @@ make check     # lint, type check and the unit tests
 
 `make demo` starts Kafka, Flink, DynamoDB Local and Prometheus, runs the pipeline with 2-minute windows sliding every 10 seconds so results appear within a minute, and prints the trending list and the run's throughput and latency. The first run builds the Flink image, which takes a few minutes. It needs ports 9092, 8080, 8081, 8001, 9090 and 9464, and most of a 4 GB Docker VM.
 
+![make demo in a terminal: the services start, the Flink job is submitted, a new trending window reaches DynamoDB every 10 seconds, then GET /trending returns the top 10 and the run's throughput and latency](docs/demo.gif)
+
+*`make demo`, with the waits shortened. The elapsed time at the start of each line is real; `asciinema play docs/demo.cast` plays it at full speed.*
+
 ## Testing strategy
 
 | Level | Run with | What it covers |
