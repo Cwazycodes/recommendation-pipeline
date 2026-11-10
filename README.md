@@ -42,7 +42,7 @@ Kafka and Flink run on a laptop; the table and the API run in AWS, deployed with
 | Recovers from crashes without losing or repeating results | Four failure drills pass: TaskManager killed, Kafka restarted, writer killed mid-batch, DynamoDB down for 30 s. Output matches a reference implementation, with one item per window ([reliability.md](docs/reliability.md)) |
 | Counts are right | The Flink job's output equals a plain-Python oracle on ties, late events, duplicates and empty windows ([design.md](docs/design.md#testing-against-an-oracle)) |
 | Known throughput and bottleneck | 150 events/s sustained at parallelism 1 and 201 at parallelism 2 on a 4-core laptop, with processing p95 inside the 30 s target. Deduplication, a Python operator, is the bottleneck ([benchmarks.md](docs/benchmarks.md)) |
-| Works against real AWS | The local pipeline writes to DynamoDB in London and the public API serves it; a put takes 28 ms at the median ([benchmarks.md](docs/benchmarks.md#dynamodb-in-aws)) |
+| Works against real AWS | The local pipeline writes to DynamoDB in London and the public API serves it: [`GET /trending`](https://9buaaxqrt5.execute-api.eu-west-2.amazonaws.com/trending) returns the list from the last run, throttled to 1 request a second. A put takes 28 ms at the median ([benchmarks.md](docs/benchmarks.md#dynamodb-in-aws)) |
 | No stored cloud credentials | GitHub Actions deploys through OIDC with a role only `main` of this repository can assume, and every role is least-privilege ([design.md](docs/design.md#deployment-terraform)) |
 
 ## Quick start
