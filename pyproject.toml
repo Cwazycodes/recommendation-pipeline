@@ -1,6 +1,6 @@
 [project]
 name = "realtime-recommendation-pipeline"
-version = "0.1.0"
+version = "1.0.0"
 description = "A real-time trending programme recommendation pipeline using Kafka, Flink and AWS"
 authors = [
     { name = "cwazycodes", email = "mhussain2002@icloud.com" }
