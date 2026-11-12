@@ -72,7 +72,7 @@ make check     # lint, type check and the unit tests
 
 | Level | Run with | What it covers |
 |---|---|---|
-| Unit | `make test`, in CI | 266 tests: validation, deduplication, window rules, the continue-watching rule, both writers' commit and crash behaviour (fake Kafka, moto for DynamoDB), both API routes, settings, and a check that no host, port, topic or table is written into the code |
+| Unit | `make test`, in CI | 290 tests: validation, deduplication, window rules, the continue-watching rule, both writers' commit and crash behaviour (fake Kafka, moto for DynamoDB), both API routes, settings, and a check that no host, port, topic or table is written into the code |
 | Flink against an oracle | `make test-flink`, in CI | Each job's own logic in a local Flink mini-cluster: deduplication and the trending SQL against `trending_oracle.py`, and the continue-watching state against `continue_watching_oracle.py` |
 | Integration | `make test-int`, in CI | Kafka and DynamoDB Local in throwaway containers: the producer, the writer killed and restarted, the API and the table |
 | End to end | `make test-e2e` | The demo on the local stack: the first window must reach DynamoDB within 90 s |

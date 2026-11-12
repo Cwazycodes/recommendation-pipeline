@@ -8,6 +8,7 @@ from typing import Any, Self
 import boto3
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
+from confluent_kafka import KafkaError, KafkaException
 from moto import mock_aws
 
 from realtime_recommendation_pipeline.common.continue_watching_table import (
@@ -353,6 +354,34 @@ def test_samples_measure_from_the_event_to_the_write() -> None:
     assert len(samples.latency_s) == 4
     # produced_at is 8.25 s before WRITTEN_AT.
     assert {latency for _, latency in samples.latency_s} == {8.25}
+
+
+def test_run_polls_until_asked_to_stop() -> None:
+    consumer = FakeConsumer()
+    table = FakeTable()
+    stops = iter([False, False, False, True])
+
+    make_writer(consumer, table, batch_size=3).run(lambda: next(stops))
+
+    # Three polls of up to 3 changes: all 7 written and committed.
+    assert consumer.committed == len(CHANGES)
+    assert table.items == expected_items()
+
+
+def test_a_kafka_error_stops_the_writer_before_it_writes() -> None:
+    class BrokenMessage(FakeMessage):
+        def error(self) -> KafkaError:  # type: ignore[override]
+            return KafkaError(KafkaError._TRANSPORT)
+
+    consumer = FakeConsumer()
+    consumer.messages[1] = BrokenMessage(1, CHANGES[1])
+    table = FakeTable()
+
+    with pytest.raises(KafkaException):
+        make_writer(consumer, table).poll_once()
+
+    assert table.writes == 0
+    assert consumer.committed == 0
 
 
 # --- The real table ----------------------------------------------------------------

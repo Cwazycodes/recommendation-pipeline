@@ -1,11 +1,32 @@
-from realtime_recommendation_pipeline.tools.bench import Run, TaskTime
+from pathlib import Path
+
+import pytest
+
+from realtime_recommendation_pipeline.settings import (
+    DynamoDBSettings,
+    FlinkSettings,
+    KafkaSettings,
+    MetricsSettings,
+)
+from realtime_recommendation_pipeline.tools.bench import (
+    Run,
+    TaskTime,
+    read_rows,
+    write_rows,
+)
 from realtime_recommendation_pipeline.tools.bench_continue_watching import (
+    RESULT_COLUMNS,
     between,
+    main,
     markdown_table,
     percentile,
     result_row,
+    run_bench,
 )
+from realtime_recommendation_pipeline.tools.demo import DemoError, DemoSettings
 from realtime_recommendation_pipeline.tools.metrics_report import Ingest
+
+ENV_EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"
 
 RUN = Run(parallelism=1, partitions=6, rate=100.0, duration_s=120.0, seed=42)
 INGEST = Ingest(
@@ -56,3 +77,37 @@ def test_a_run_becomes_one_row_and_one_table_line() -> None:
         "| 1 | 100 | 100 | 12 | steady | 4 | 5.0 / 12.5 / 12.5 | 20 / 50 / 50 "
         "| track-progress (640) |"
     )
+
+
+def test_the_benchmark_refuses_dynamodb_in_aws(tmp_path: Path) -> None:
+    settings = DemoSettings(
+        KafkaSettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
+        FlinkSettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
+        # No endpoint: boto3 would use the table in AWS.
+        DynamoDBSettings(_env_file=ENV_EXAMPLE, endpoint_url=None),  # type: ignore[call-arg]
+        MetricsSettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
+    )
+
+    with pytest.raises(DemoError, match="DynamoDB Local"):
+        run_bench(settings, [RUN], tmp_path, say=lambda _line: None)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_report_only_prints_the_saved_results(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = result_row(
+        RUN,
+        started_at=1_793_000_000.0,
+        ingest=INGEST,
+        latency_s=[4.0, 5.0],
+        write_s=[0.02],
+        tasks={"track-progress": TaskTime(640.5, 0.0)},
+    )
+    write_rows(tmp_path / "results.csv", RESULT_COLUMNS, [row])
+
+    main(["--report-only", "--out-dir", str(tmp_path)])
+
+    saved = read_rows(tmp_path / "results.csv")
+    assert capsys.readouterr().out.splitlines() == markdown_table(saved)

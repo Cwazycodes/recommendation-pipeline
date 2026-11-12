@@ -1,12 +1,18 @@
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import boto3
+import pytest
+from moto import mock_aws
+
 from realtime_recommendation_pipeline.common.trending_table import (
     latest_window,
     load_table_definition,
     plain,
+    recreate_table,
     window_item,
 )
 
@@ -98,3 +104,30 @@ def test_numbers_come_back_as_plain_python_numbers() -> None:
         "ttl": 1793707200,
         "ratio": 0.5,
     }
+
+
+@pytest.fixture
+def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """moto with fake credentials, so no test can reach a real AWS account."""
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-2")
+    with mock_aws():
+        yield boto3.client("dynamodb")
+
+
+def test_recreate_table_creates_an_empty_table_of_its_own(client: Any) -> None:
+    definition = load_table_definition(DEFINITION)
+
+    recreate_table(client, definition, "bench")
+    client.put_item(
+        TableName="bench", Item={"pk": {"S": "USER#u1"}, "sk": {"S": "prog-a"}}
+    )
+    recreate_table(client, definition, "bench")
+
+    assert client.scan(TableName="bench")["Count"] == 0
+    ttl = client.describe_time_to_live(TableName="bench")["TimeToLiveDescription"]
+    assert ttl["TimeToLiveStatus"] == "ENABLED"
+    # Only the table it was named, never the one in the definition.
+    assert client.list_tables()["TableNames"] == ["bench"]
