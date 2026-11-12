@@ -21,8 +21,12 @@ RUN python3 -m pip install --no-cache-dir \
 
 # The validation job imports the event contract, which needs Pydantic, and
 # reads its settings from the environment with pydantic-settings. The image's
-# Python 3.10 gets pydantic-settings 2.15; the job uses nothing newer.
-RUN python3 -m pip install --no-cache-dir "pydantic>=2,<3" "pydantic-settings>=2,<3"
+# Python 3.10 gets pydantic-settings 2.15; the job uses nothing newer. The jobs
+# decode Avro events with fastavro, which PyFlink already brings in through
+# Apache Beam; it is named here so the jobs do not rely on that.
+RUN python3 -m pip install --no-cache-dir \
+    "pydantic>=2,<3" "pydantic-settings>=2,<3" "fastavro>=1.9,<2"
+
 
 ARG KAFKA_CONNECTOR_VERSION=3.3.0-1.20
 

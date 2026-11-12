@@ -7,6 +7,8 @@ from pyflink.common.serialization import SimpleStringSchema
 from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.datastream.connectors.kafka import KafkaOffsetsInitializer, KafkaSource
 
+from realtime_recommendation_pipeline.common.event_schemas import WriterSchemas
+from realtime_recommendation_pipeline.common.schema_registry import SchemaRegistry
 from realtime_recommendation_pipeline.flink_jobs.continue_watching import (
     ValidEvents,
     continue_watching,
@@ -16,6 +18,7 @@ from realtime_recommendation_pipeline.flink_jobs.reliability import (
     job_settings,
     to_flink_configuration,
 )
+from realtime_recommendation_pipeline.flink_jobs.validation import KAFKA_VALUE_CHARSET
 from realtime_recommendation_pipeline.settings import (
     ContinueWatchingSettings,
     FlinkSettings,
@@ -52,7 +55,8 @@ def main() -> None:
         .set_topics(args.source_topic)
         .set_group_id(settings.source_group_id)
         .set_starting_offsets(KafkaOffsetsInitializer.earliest())
-        .set_value_only_deserializer(SimpleStringSchema())
+        # Avro bytes, as a string that encodes back to them (validation.py).
+        .set_value_only_deserializer(SimpleStringSchema(KAFKA_VALUE_CHARSET))
         .build()
     )
 
@@ -63,9 +67,10 @@ def main() -> None:
         source, WatermarkStrategy.no_watermarks(), "continue-watching-source"
     ).uid("continue-watching-source")
 
-    valid_events = events.flat_map(ValidEvents(), output_type=Types.STRING()).name(
-        "valid-events"
-    )
+    registry = SchemaRegistry(flink.schema_registry_url)
+    valid_events = events.flat_map(
+        ValidEvents(WriterSchemas(registry.schema)), output_type=Types.STRING()
+    ).name("valid-events")
 
     # One sink subtask writing to a one-partition topic: each user's changes
     # come from one keyed subtask, so they reach the writer in the order they

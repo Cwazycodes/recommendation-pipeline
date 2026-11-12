@@ -28,6 +28,10 @@ from botocore.exceptions import BotoCoreError, ClientError
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 
+from realtime_recommendation_pipeline.common.schema_registry import (
+    RegistryUnavailable,
+    SchemaRegistry,
+)
 from realtime_recommendation_pipeline.common.trending_table import (
     TIME_FORMAT,
     create_table_if_missing,
@@ -41,6 +45,7 @@ from realtime_recommendation_pipeline.settings import (
     FlinkSettings,
     KafkaSettings,
     MetricsSettings,
+    SchemaRegistrySettings,
     load,
 )
 from realtime_recommendation_pipeline.tools.api_local import (
@@ -101,6 +106,7 @@ class DemoSettings:
     flink: FlinkSettings
     dynamo: DynamoDBSettings
     metrics: MetricsSettings
+    registry: SchemaRegistrySettings
     duration_s: float = 120.0
     rate: float = 50.0
     limit: int = 10
@@ -112,6 +118,7 @@ class DemoSettings:
             load(FlinkSettings),
             load(DynamoDBSettings),
             load(MetricsSettings),
+            load(SchemaRegistrySettings),
             **options,
         )
 
@@ -126,6 +133,10 @@ class DemoSettings:
     @property
     def dynamodb_endpoint(self) -> str | None:
         return self.dynamo.endpoint_url
+
+    @property
+    def schema_registry(self) -> SchemaRegistry:
+        return SchemaRegistry(self.registry.url)
 
 
 @dataclass(frozen=True)
@@ -163,7 +174,13 @@ def wait_until(
         try:
             if ready():
                 return
-        except (OSError, KafkaException, BotoCoreError, ClientError) as exc:
+        except (
+            OSError,
+            KafkaException,
+            BotoCoreError,
+            ClientError,
+            RegistryUnavailable,
+        ) as exc:
             last_error = exc
 
         if time.monotonic() > deadline:
@@ -181,6 +198,10 @@ def wait_for_services(settings: DemoSettings) -> None:
     wait_until(
         f"Flink at {settings.flink_url} has no free task slot",
         lambda: flink_request(f"{settings.flink_url}/overview")["slots-available"] > 0,
+    )
+    wait_until(
+        f"The Schema Registry is not reachable at {settings.registry.url}",
+        lambda: settings.schema_registry.subjects() is not None,
     )
     # DynamoDB in AWS is not checked: the writer's role may only put items.
     if settings.dynamodb_endpoint is None:
@@ -333,6 +354,7 @@ class ProducerThread(threading.Thread):
             rate=self.settings.rate,
             duration=self.settings.duration_s,
             topic=EVENTS_TOPIC,
+            registry=self.settings.schema_registry,
             live=True,
         )
 

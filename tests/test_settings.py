@@ -10,6 +10,7 @@ from realtime_recommendation_pipeline.settings import (
     KafkaSettings,
     LogSettings,
     MetricsSettings,
+    SchemaRegistrySettings,
     SettingsError,
     environment,
     load,
@@ -22,6 +23,7 @@ SETTINGS = (
     FlinkSettings,
     DynamoDBSettings,
     ContinueWatchingSettings,
+    SchemaRegistrySettings,
     MetricsSettings,
     LogSettings,
 )

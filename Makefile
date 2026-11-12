@@ -11,11 +11,15 @@ MALFORMED_RATE ?= 0.0
 DUP_RATE ?= 0.0
 # Stamp produced events with the time they are sent (make produce LIVE=1).
 LIVE ?=
+# The event schema version make produce writes; empty means the newest.
+SCHEMA_VERSION ?=
+# The git ref whose event schemas make schema-check treats as released.
+SCHEMA_BASE ?= origin/main
 JOB_ARGS ?=
 SAVEPOINT ?=
 LIMIT ?= 10
 DEMO_DURATION ?= 120
-CHAOS_DRILLS ?= taskmanager kafka writer dynamodb continue-watching
+CHAOS_DRILLS ?= taskmanager kafka writer dynamodb continue-watching schema
 MINUTES ?= 5
 TOPIC ?=
 RATES ?= 50 100 150 200 300 500 2000
@@ -49,7 +53,7 @@ TF_ARGS ?=
 .env:
 	cp .env.example .env
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local cw-writer cw-writer-aws cw-api-local demo test-e2e chaos metrics bench bench-report writer-aws bench-aws cw-bench package-lambda tf-check tf-plan deploy destroy bootstrap api-url
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics schema-check logs produce test-int test-registry submit-job stop-job check-trending db-init db-smoke writer check-writer api-local cw-writer cw-writer-aws cw-api-local demo test-e2e chaos metrics bench bench-report writer-aws bench-aws cw-bench package-lambda tf-check tf-plan deploy destroy bootstrap api-url
 
 ## Show all available targets and their descriptions.
 help:
@@ -79,7 +83,7 @@ typecheck:
 
 ## Run automated tests and generate terminal and XML coverage reports.
 test:
-	poetry run pytest -m "not integration and not slow and not e2e" --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
+	poetry run pytest -m "not integration and not slow and not e2e and not registry" --cov=realtime_recommendation_pipeline --cov-report=term-missing --cov-report=xml:coverage.xml
 
 ## Run the slow tests that start a local Flink mini-cluster (needs Java).
 test-flink:
@@ -112,22 +116,31 @@ down_delete:
 topics:
 	poetry run python -m realtime_recommendation_pipeline.tools.create_topics
 
+## Check the event schemas against the released ones (SCHEMA_BASE) with the stack's Schema Registry.
+schema-check:
+	poetry run python -m realtime_recommendation_pipeline.tools.schema_check --base-ref $(SCHEMA_BASE)
+
 ## Follow logs from the Kafka containers.
 logs:
 	docker compose logs -f kafka kafka-ui
 
-## Produce synthetic events to local Kafka (LIVE=1 stamps them with the time they are sent).
+## Produce synthetic events to local Kafka (LIVE=1 stamps them with the time they are sent; SCHEMA_VERSION=1 writes v1).
 produce:
 	poetry run python -m realtime_recommendation_pipeline.producer.kafka_producer \
 		--rate $(RATE) \
 		--duration $(DURATION) \
 		--malformed-rate $(MALFORMED_RATE) \
 		--dup-rate $(DUP_RATE) \
+		$(if $(SCHEMA_VERSION),--schema-version $(SCHEMA_VERSION)) \
 		$(if $(LIVE),--live)
 
 ## Run integration tests (Kafka and DynamoDB Local in Docker).
 test-int:
 	TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock poetry run pytest -m integration
+
+## Run the tests that need the stack's Schema Registry (make up first).
+test-registry:
+	poetry run pytest -m registry
 
 ## Submit a PyFlink job from jobs/ (e.g. make submit-job JOB=validate_events).
 submit-job:

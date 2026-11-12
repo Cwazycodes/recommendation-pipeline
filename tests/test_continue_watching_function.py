@@ -9,6 +9,12 @@ from typing import Any
 
 from pyflink.datastream.state import StateTtlConfig
 
+from realtime_recommendation_pipeline.common.event_schemas import (
+    WriterSchemas,
+    encode,
+    parsed_schema,
+    schema_text,
+)
 from realtime_recommendation_pipeline.continue_watching_oracle import (
     InProgress,
     continue_watching_oracle,
@@ -202,17 +208,18 @@ def test_the_function_asks_for_one_map_state_called_progress() -> None:
 
 
 def test_valid_events_pass_and_invalid_ones_are_counted() -> None:
-    # The job's events come from the producer, with a UUID for event_id.
+    # The job's events come from the producer, in Avro, with a UUID event_id.
     (generated,) = generate_events(1, seed=1)
-    valid = json.dumps(generated)
-    function = ValidEvents()
+    valid = encode(generated, parsed_schema(2), 7)
+    function = ValidEvents(WriterSchemas({7: schema_text(2)}.__getitem__))
     runtime_context = FakeRuntimeContext()
     function.open(runtime_context)
 
+    # The Kafka source hands the function each value's bytes as ISO-8859-1.
     output = [
         out
-        for value in [valid, "not json", json.dumps({"user_id": "u1"})]
-        for out in function.flat_map(value)
+        for value in [valid, b"not avro", valid[:20]]
+        for out in function.flat_map(value.decode("ISO-8859-1"))
     ]
 
     assert [json.loads(out)["event_id"] for out in output] == [generated["event_id"]]

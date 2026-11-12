@@ -26,7 +26,6 @@ def test_valid_events_have_required_fields() -> None:
 
     required_fields = {
         "event_id",
-        "schema_version",
         "user_id",
         "programme_id",
         "event_type",
@@ -35,10 +34,24 @@ def test_valid_events_have_required_fields() -> None:
         "device",
         "event_time",
         "produced_at",
+        "session_id",
     }
 
     for event in events:
         assert set(event) == required_fields
+
+
+def test_a_sittings_events_share_one_session_id() -> None:
+    events = generate_valid_events(1_000, seed=42)
+
+    sessions: dict[object, list[dict[str, object]]] = {}
+    for event in events:
+        sessions.setdefault(event["session_id"], []).append(event)
+
+    assert len(sessions) > 1
+    for session in sessions.values():
+        assert len({(e["user_id"], e["programme_id"]) for e in session}) == 1
+        assert [e["event_type"] for e in session].count("play_start") <= 1
 
 
 def test_duplicate_rate_one_duplicates_every_event() -> None:
@@ -74,7 +87,7 @@ def test_jsonl_output_is_parseable() -> None:
 
     for line in lines:
         parsed = json.loads(line)
-        assert parsed["schema_version"] == 1
+        assert parsed["event_id"] in {event["event_id"] for event in events}
 
 
 def test_late_events_are_emitted_out_of_order() -> None:

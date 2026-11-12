@@ -229,6 +229,7 @@ def bench_run(
             duration=run.duration_s,
             seed=run.seed,
             topic=EVENTS_TOPIC,
+            registry=settings.schema_registry,
             live=True,
         )
         sent_from, sent_to = stats["sent_from_ms"] / 1000, stats["sent_to_ms"] / 1000

@@ -12,8 +12,11 @@ outcome the design promises:
 - dynamodb: stop DynamoDB Local for 30 s. The writer backs off, commits
   nothing while it waits, then catches up.
 - continue-watching: run the continue-watching job and its writer, and
-SIGKILL the TaskManager and then the writer mid-stream. The table ends
-with exactly the programmes the oracle has in progress.
+  SIGKILL the TaskManager and then the writer mid-stream. The table ends
+  with exactly the programmes the oracle has in progress.
+- schema: the producers move from v1 of the event schema to v2 halfway
+  through. The job, which reads v1, runs on without a restart, dead-letters
+  nothing, and its output still matches the oracle.
 
 
 The drills have their own topics and partition key, but they kill, restart
@@ -44,6 +47,11 @@ from confluent_kafka import Consumer, KafkaException, Producer, TopicPartition
 from realtime_recommendation_pipeline.common.continue_watching_table import (
     USER_KEY_PREFIX,
     from_millis,
+)
+from realtime_recommendation_pipeline.common.event_schemas import (
+    LATEST_VERSION,
+    schema_text,
+    subject,
 )
 from realtime_recommendation_pipeline.common.kafka import downstream_consumer_config
 from realtime_recommendation_pipeline.common.trending_table import (
@@ -404,20 +412,28 @@ def read_committed(bootstrap_servers: str, topic: str) -> list[dict[str, Any]]:
 class EventProducer(threading.Thread):
     """The generated events for the job drills, at a steady rate."""
 
-    def __init__(self, bootstrap_servers: str, topic: str = EVENTS_TOPIC) -> None:
+    def __init__(
+        self,
+        settings: DemoSettings,
+        topic: str = EVENTS_TOPIC,
+        schema_versions: Sequence[int] = (LATEST_VERSION,),
+    ) -> None:
         super().__init__(name="chaos-producer", daemon=True)
-        self.bootstrap_servers = bootstrap_servers
+        self.settings = settings
         self.topic = topic
+        self.schema_versions = schema_versions
         self.stats: dict[str, int] | None = None
 
     def run(self) -> None:
         self.stats = produce_events(
-            bootstrap_servers=self.bootstrap_servers,
+            bootstrap_servers=self.settings.bootstrap_servers,
             rate=RATE,
             duration=DURATION_S,
             seed=SEED,
             dup_rate=DUP_RATE,
             topic=self.topic,
+            registry=self.settings.schema_registry,
+            schema_versions=self.schema_versions,
         )
 
 
@@ -551,7 +567,10 @@ class ContinueWatchingWriterProcess(WriterProcess):
 
 
 def run_job_drill(
-    settings: DemoSettings, say: Say, disrupt: Callable[[str], DrillReport]
+    settings: DemoSettings,
+    say: Say,
+    disrupt: Callable[[str], DrillReport],
+    schema_versions: Sequence[int] = (LATEST_VERSION,),
 ) -> DrillReport:
     """Run the job on generated events, break something, compare with the oracle."""
     report = DrillReport()
@@ -563,7 +582,7 @@ def run_job_drill(
             lambda: job_is_running(settings.flink_url, job_id),
             timeout_s=180,
         )
-        producer = EventProducer(settings.bootstrap_servers)
+        producer = EventProducer(settings, schema_versions=schema_versions)
         producer.start()
         say(
             f"Job running; producing {RATE * DURATION_S:.0f} events over {DURATION_S:.0f} s"
@@ -856,7 +875,7 @@ def continue_watching_drill(settings: DemoSettings, say: Say) -> DrillReport:
             timeout_s=180,
         )
         writer.start()
-        producer = EventProducer(settings.bootstrap_servers, CW_EVENTS_TOPIC)
+        producer = EventProducer(settings, CW_EVENTS_TOPIC)
         producer.start()
         say(
             f"Job and writer running; producing {RATE * DURATION_S:.0f} events "
@@ -923,6 +942,42 @@ def continue_watching_drill(settings: DemoSettings, say: Say) -> DrillReport:
     return report
 
 
+def schema_drill(settings: DemoSettings, say: Say) -> DrillReport:
+    """Producers move from v1 to v2 mid-stream while the job, reading v1, runs on."""
+    events = len(generate_events(int(RATE * DURATION_S), seed=SEED, dup_rate=DUP_RATE))
+
+    def upgrade_producers(job_id: str) -> DrillReport:
+        report = DrillReport()
+        registry = settings.schema_registry
+        ids = [registry.register(subject(), schema_text(v)) for v in (1, 2)]
+        say("The producer writes v1, then v2 from halfway; the job is left alone")
+        wait_until(
+            "The producer did not write its v2 half",
+            lambda: end_offset(settings.bootstrap_servers, EVENTS_TOPIC) >= events,
+            timeout_s=DURATION_S + 300,
+        )
+        restored = checkpoint_counts(settings.flink_url, job_id)["restored"]
+        report.observed.append(
+            f"the first {(events + 1) // 2} events written as v1 (schema id "
+            f"{ids[0]}) and the other {events // 2} as v2 (id {ids[1]})"
+        )
+        if restored:
+            report.problems.append(
+                f"the job restarted {restored} time(s) while producers moved to v2"
+            )
+        else:
+            report.observed.append("the job read both without restarting")
+        return report
+
+    report = run_job_drill(settings, say, upgrade_producers, schema_versions=(1, 2))
+    dead_letters = end_offset(settings.bootstrap_servers, EVENTS_DLQ_TOPIC)
+    if dead_letters:
+        report.problems.append(f"{dead_letters} events were dead-lettered")
+    else:
+        report.observed.append("nothing dead-lettered")
+    return report
+
+
 DRILLS: dict[str, tuple[str, Callable[[DemoSettings, Say], DrillReport]]] = {
     "taskmanager": ("TaskManager killed mid-stream", taskmanager_drill),
     "kafka": ("Kafka broker restarted mid-stream", kafka_drill),
@@ -932,6 +987,7 @@ DRILLS: dict[str, tuple[str, Callable[[DemoSettings, Say], DrillReport]]] = {
         "Continue watching: TaskManager and writer killed",
         continue_watching_drill,
     ),
+    "schema": ("Producers move to schema v2 mid-stream", schema_drill),
 }
 
 

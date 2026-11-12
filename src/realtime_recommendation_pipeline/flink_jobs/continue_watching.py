@@ -28,7 +28,11 @@ from pyflink.datastream import (
 )
 from pyflink.datastream.state import MapStateDescriptor, StateTtlConfig
 
-from realtime_recommendation_pipeline.flink_jobs.validation import validate_event
+from realtime_recommendation_pipeline.common.event_schemas import WriterSchemas
+from realtime_recommendation_pipeline.flink_jobs.validation import (
+    KAFKA_VALUE_CHARSET,
+    validate_event,
+)
 
 # More than this share of a programme's duration watched counts as finished.
 FINISHED_FRACTION = 0.9
@@ -123,13 +127,16 @@ class ValidEvents(FlatMapFunction):
     The trending job dead-letters invalid events, so this job only counts them.
     """
 
+    def __init__(self, writer_schemas: WriterSchemas) -> None:
+        self.writer_schemas = writer_schemas
+
     def open(self, runtime_context: RuntimeContext) -> None:
         metrics = runtime_context.get_metrics_group()
         self.valid_events = metrics.counter("valid_events")
         self.invalid_events = metrics.counter("invalid_events")
 
     def flat_map(self, value: str) -> Iterator[str]:
-        result = validate_event(value)
+        result = validate_event(value.encode(KAFKA_VALUE_CHARSET), self.writer_schemas)
         if result.event is None:
             self.invalid_events.inc()
             return

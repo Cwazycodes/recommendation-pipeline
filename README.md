@@ -4,14 +4,17 @@
 
 # Real-Time Recommendation Pipeline
 
-A streaming pipeline that ranks trending TV programmes from viewing events. Kafka and Flink count each programme's distinct viewers over the last hour, every five minutes, and a serverless API on AWS serves the latest top 20. A second job keeps each viewer's place in the programmes they haven't finished, for a continue-watching list per user. The hard parts of streaming are the point: event time, duplicate events, exactly-once results and crash recovery, each backed by tests, failure drills and benchmarks.
+A streaming pipeline that ranks trending TV programmes from viewing events. Kafka and Flink count each programme's distinct viewers over the last hour, every five minutes, and a serverless API on AWS serves the latest top 20. A second job keeps each viewer's place in the programmes they haven't finished, for a continue-watching list per user. Events are Avro, and a Schema Registry refuses any change to their schema that would break a job reading them. The hard parts of streaming are the point: event time, duplicate events, exactly-once results and crash recovery, each backed by tests, failure drills and benchmarks.
 
 ## How it works
 
 ```mermaid
 flowchart LR
     subgraph laptop["Laptop: Docker Compose"]
-        producer["Event producer"] -->|viewing-events| kafka[("Kafka")]
+        producer["Event producer"] -->|"viewing-events, Avro"| kafka[("Kafka")]
+        producer -->|"registers its schema"| registry[("Schema Registry")]
+        registry -.->|"schemas by id"| job
+        registry -.->|"schemas by id"| cwjob
         kafka --> job["Trending job: validate, deduplicate, 1-hour sliding windows, top 20"]
         kafka --> cwjob["Continue-watching job: newest position per user and programme"]
         job -->|"invalid events: viewing-events-dlq"| kafka
@@ -33,7 +36,7 @@ flowchart LR
     client["Client"] --> api
 ```
 
-1. The producer sends synthetic viewing events to Kafka, each stamped with the time it happened.
+1. The producer sends synthetic viewing events to Kafka in Avro, each stamped with the time it happened. It registers its schema version first, and the Schema Registry refuses a version that would break an earlier one.
 2. The Flink job dead-letters invalid events, drops repeated `event_id`s, counts distinct viewers per programme in 1-hour windows that slide every 5 minutes, and ranks the top 20. Each window's list goes to `trending-results` in a Kafka transaction that commits with a checkpoint, so readers see every row exactly once.
 3. The results writer stores each window as one DynamoDB item keyed by its end time, and commits its Kafka offsets only after the write. A crash replays at most a window, and rewriting it changes nothing.
 4. A second Flink job keys the same events by viewer and keeps the newest position in each programme; a repeated or late, older event changes nothing. It publishes upserts and deletes to `continue-watching-changes` exactly once, dropping a programme once more than 90% of it is watched, and its writer applies them to DynamoDB in batches, again committing only after the write.
@@ -50,6 +53,7 @@ Kafka and Flink run on a laptop; the table and the API run in AWS, deployed with
 | Known throughput and bottleneck | 150 events/s sustained at parallelism 1 and 201 at parallelism 2 on a 4-core laptop, with processing p95 inside the 30 s target. Deduplication, a Python operator, is the bottleneck ([benchmarks.md](docs/benchmarks.md)) |
 | Works against real AWS | The local pipeline writes to DynamoDB in London and the public API serves it: [`GET /trending`](https://9buaaxqrt5.execute-api.eu-west-2.amazonaws.com/trending) returns the list from the last run, throttled to 1 request a second. A put takes 28 ms at the median ([benchmarks.md](docs/benchmarks.md#dynamodb-in-aws)) |
 | Continue watching meets the same bar | The second job's output, applied in order, equals a second oracle, also at parallelism 2. A drill kills its TaskManager and then its writer, and the table still matches the oracle. It sustains 500 events/s at parallelism 1 ([design.md](docs/design.md#7-continue-watching), [reliability.md](docs/reliability.md), [benchmarks.md](docs/benchmarks.md#continue-watching)) |
+| The event contract can change without breaking consumers | Events are Avro, checked by a Schema Registry set to `FULL_TRANSITIVE`. CI fails a pull request whose schema would break one on `main`, and tests show five kinds of breaking change refused. A drill moves the producers to v2 mid-stream while the job, still reading v1, runs on: no restart, nothing dead-lettered, and the output matches the oracle ([ADR 6](docs/adr/0006-avro-events.md), [reliability.md](docs/reliability.md)) |
 | No stored cloud credentials | GitHub Actions deploys through OIDC with a role only `main` of this repository can assume, and every role is least-privilege ([design.md](docs/design.md#deployment-terraform)) |
 
 ## Quick start
@@ -62,7 +66,7 @@ make demo      # the whole pipeline in Docker for 2 minutes, then GET /trending
 make check     # lint, type check and the unit tests
 ```
 
-`make demo` starts Kafka, Flink, DynamoDB Local and Prometheus, runs the pipeline with 2-minute windows sliding every 10 seconds so results appear within a minute, and prints the trending list and the run's throughput and latency. The first run builds the Flink image, which takes a few minutes. It needs ports 9092, 8080, 8081, 8001, 9090 and 9464, and most of a 4 GB Docker VM.
+`make demo` starts Kafka, the Schema Registry, Flink, DynamoDB Local and Prometheus, runs the pipeline with 2-minute windows sliding every 10 seconds so results appear within a minute, and prints the trending list and the run's throughput and latency. The first run builds the Flink image, which takes a few minutes. It needs ports 9092, 8080, 8081, 8085, 8001, 9090 and 9464, and most of a 4 GB Docker VM.
 
 ![make demo in a terminal: the services start, the Flink job is submitted, a new trending window reaches DynamoDB every 10 seconds, then GET /trending returns the top 10 and the run's throughput and latency](docs/demo.gif)
 
@@ -72,11 +76,12 @@ make check     # lint, type check and the unit tests
 
 | Level | Run with | What it covers |
 |---|---|---|
-| Unit | `make test`, in CI | 290 tests: validation, deduplication, window rules, the continue-watching rule, both writers' commit and crash behaviour (fake Kafka, moto for DynamoDB), both API routes, settings, and a check that no host, port, topic or table is written into the code |
+| Unit | `make test`, in CI | 334 tests: Avro encoding and decoding, validation and dead letters, deduplication, window rules, the continue-watching rule, both writers' commit and crash behaviour (fake Kafka, moto for DynamoDB), both API routes, settings, and a check that no host, port, topic or table is written into the code |
 | Flink against an oracle | `make test-flink`, in CI | Each job's own logic in a local Flink mini-cluster: deduplication and the trending SQL against `trending_oracle.py`, and the continue-watching state against `continue_watching_oracle.py` |
 | Integration | `make test-int`, in CI | Kafka and DynamoDB Local in throwaway containers: the producer, the writer killed and restarted, the API and the table |
 | End to end | `make test-e2e` | The demo on the local stack: the first window must reach DynamoDB within 90 s |
-| Failure drills | `make chaos` | The five drills above, recorded in [reliability.md](docs/reliability.md) |
+| Schema Registry | `make test-registry`, `make schema-check`, in CI | Against the stack's registry: v1 and v2 accepted, breaking changes refused, and the branch's schemas checked against `main`'s |
+| Failure drills | `make chaos` | The six drills above, recorded in [reliability.md](docs/reliability.md) |
 | Performance | `make bench`, `make cw-bench` | Throughput, lag and latency at increasing rates, and the continue-watching job at one, recorded in [benchmarks.md](docs/benchmarks.md) |
 | Infrastructure | `make tf-check`, in CI | `terraform fmt` and `validate` for both Terraform roots, without AWS access |
 
@@ -116,12 +121,13 @@ curl "$(make -s api-url | sed 's#/trending$##')/users/user-00040/continue-watchi
 - **Alarms:** CloudWatch alarms on growing consumer lag, dead-lettered events and processing p95 above 30 s, rather than reading Prometheus by hand.
 - **Tighter IAM and edge protection:** the deploy role trusts any workflow run on `main`; adding the workflow file (`job_workflow_ref`) to the token's subject would limit it to Deploy. A permissions boundary on the stack's roles would stop a deploy widening them, and AWS WAF rate rules, through CloudFront, would protect the API.
 - **Fewer continue-watching writes:** the job publishes a change for nearly every heartbeat. Publishing a programme's position at most once a minute, plus every pause and finish, would cut the writes many times over ([ADR 5](docs/adr/0005-continue-watching-state.md)).
+- **Schemas registered by CI, not producers:** here a producer registers its version when it starts, which the compatibility rule keeps safe. In production CI would register each new version on merge, producers would only look theirs up, and the registry would sit behind authentication ([ADR 6](docs/adr/0006-avro-events.md)).
 - **Environments:** separate AWS accounts for staging and production, with GitHub environments and a reviewed `terraform plan` before each apply.
 
 ## Documentation
 
 - [design.md](docs/design.md): how each part works, and its guarantees
-- [docs/adr/](docs/adr/README.md): the five main decisions and their trade-offs
+- [docs/adr/](docs/adr/README.md): the six main decisions and their trade-offs
 - [metrics.md](docs/metrics.md): what each number means and where it comes from
 - [benchmarks.md](docs/benchmarks.md): throughput, latency and the bottleneck, measured
 - [reliability.md](docs/reliability.md): the failure drills and their recorded results
@@ -130,7 +136,7 @@ curl "$(make -s api-url | sed 's#/trending$##')/users/user-00040/continue-watchi
 <summary>All make targets (<code>make help</code>)</summary>
 
 ```text
- make help             Show all available targets and their descriptions.
+  make help             Show all available targets and their descriptions.
   make install          Install project and default development dependencies.
   make fmt              Format Python code with Ruff.
   make lint             Check Python code style with Ruff.
@@ -144,9 +150,11 @@ curl "$(make -s api-url | sed 's#/trending$##')/users/user-00040/continue-watchi
   make down             Stop the local Kafka stack.
   make down_delete      Stop the local Kafka stack and delete kafka data.
   make topics           Create the Kafka topics named in .env.
+  make schema-check     Check the event schemas against the released ones (SCHEMA_BASE) with the stack's Schema Registry.
   make logs             Follow logs from the Kafka containers.
-  make produce          Produce synthetic events to local Kafka (LIVE=1 stamps them with the time they are sent).
+  make produce          Produce synthetic events to local Kafka (LIVE=1 stamps them with the time they are sent; SCHEMA_VERSION=1 writes v1).
   make test-int         Run integration tests (Kafka and DynamoDB Local in Docker).
+  make test-registry    Run the tests that need the stack's Schema Registry (make up first).
   make submit-job       Submit a PyFlink job from jobs/ (e.g. make submit-job JOB=validate_events).
   make stop-job         Stop a running job with a savepoint to the checkpoint volume (JOB_NAME=continue-watching picks which).
   make check-trending   Check trending-results for gaps and duplicates, reading only committed rows.

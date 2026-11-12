@@ -45,9 +45,39 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      # So the UI shows Avro events decoded.
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
     depends_on:
       kafka:
         condition: service_healthy
+
+  # The event schemas. It refuses a new version that would break an earlier
+  # one (docs/adr/0006-avro-events.md), and keeps them in Kafka, in _schemas.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.1
+    container_name: recommendation-schema-registry
+    ports:
+      # Host 8085, because Flink's web UI has 8081.
+      - "8085:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      # Each version must read, and be read by, every other (schema_registry.py).
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: full_transitive
+      # It needs little, and the Docker VM has little to spare.
+      SCHEMA_REGISTRY_HEAP_OPTS: -Xms64m -Xmx256m
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/subjects >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   flink-jobmanager:
     build:
       context: .
@@ -92,6 +122,7 @@ services:
     depends_on:
       - flink-jobmanager
       - kafka
+      - schema-registry
   dynamodb-local:
     image: amazon/dynamodb-local:3.3.2
     container_name: recommendation-dynamodb

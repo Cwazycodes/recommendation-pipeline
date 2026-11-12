@@ -1,0 +1,40 @@
+{
+  "type": "record",
+  "name": "ViewingEvent",
+  "namespace": "recommendation_pipeline",
+  "doc": "One moment of someone watching a programme: a start, a heartbeat every 30 seconds, then a pause or the end.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": {"type": "string", "logicalType": "uuid"},
+      "doc": "Unique per event. A repeat of an event has the same one."
+    },
+    {"name": "user_id", "type": "string"},
+    {"name": "programme_id", "type": "string"},
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "ViewingEventType",
+        "symbols": ["play_start", "heartbeat", "pause", "play_end"]
+      }
+    },
+    {"name": "position_s", "type": "double", "doc": "Seconds into the programme."},
+    {
+      "name": "duration_s",
+      "type": ["null", "double"],
+      "doc": "The programme's length in seconds, or null when it is not known."
+    },
+    {"name": "device", "type": "string"},
+    {
+      "name": "event_time",
+      "type": "long",
+      "doc": "When it happened, in milliseconds since the epoch (UTC)."
+    },
+    {
+      "name": "produced_at",
+      "type": "long",
+      "doc": "When the producer sent it, in milliseconds since the epoch (UTC)."
+    }
+  ]
+}

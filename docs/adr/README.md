@@ -9,5 +9,6 @@ Short records of the decisions that shape the pipeline: what was decided, what e
 | [0003](0003-idempotent-writes.md) | One DynamoDB item per window, written before the offsets are committed |
 | [0004](0004-hybrid-local-aws.md) | Kafka and Flink on a laptop, storage and the API in AWS |
 | [0005](0005-continue-watching-state.md) | Continue watching keeps the newest event per user and programme |
+| [0006](0006-avro-events.md) | Avro events, and the Schema Registry decides whether a change is compatible |
 
 Each record has the same parts: context, decision, alternatives considered, and consequences. A decision that changes gets a new record that supersedes the old one, rather than an edit.
