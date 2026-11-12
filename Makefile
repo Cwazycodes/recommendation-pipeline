@@ -140,7 +140,7 @@ test-int:
 
 ## Run the tests that need the stack's Schema Registry (make up first).
 test-registry:
-	poetry run pytest -m registry
+	poetry run pytest -m registry tests/registry
 
 ## Submit a PyFlink job from jobs/ (e.g. make submit-job JOB=validate_events).
 submit-job:
