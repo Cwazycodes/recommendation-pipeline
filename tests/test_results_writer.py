@@ -10,9 +10,11 @@ from botocore.exceptions import (
     EndpointConnectionError,
     ReadTimeoutError,
 )
+from confluent_kafka import KafkaException
 
 from realtime_recommendation_pipeline.writer.metrics import WriterMetrics
 from realtime_recommendation_pipeline.writer.results_writer import (
+    KafkaDeadLetters,
     ResultsWriter,
     writer_consumer_config,
 )
@@ -599,3 +601,43 @@ def test_metrics_are_served_for_prometheus(
 
     assert "trending_windows_written_total 1.0" in text
     assert "trending_window_freshness_seconds_bucket" in text
+
+
+class FakeDlqProducer:
+    """Takes each record at once, or leaves some undelivered after flush."""
+
+    def __init__(self, undelivered: int = 0) -> None:
+        self.sent: list[tuple[str, bytes | None, dict[str, Any]]] = []
+        self.undelivered = undelivered
+
+    def produce(
+        self, topic: str, key: bytes | None, value: bytes, on_delivery: Any
+    ) -> None:
+        self.sent.append((topic, key, json.loads(value)))
+        on_delivery(None, None)
+
+    def flush(self, timeout: float) -> int:
+        return self.undelivered
+
+
+@pytest.mark.parametrize(
+    ("key_field", "key"),
+    [("window_end", b"2026-11-02T12:00:00Z"), (None, None)],
+    ids=["by-window", "no-key"],
+)
+def test_dead_letters_are_keyed_by_their_key_field(
+    key_field: str | None, key: bytes | None
+) -> None:
+    producer = FakeDlqProducer()
+    record = {"window_end": "2026-11-02T12:00:00Z", "error": "throttled"}
+
+    KafkaDeadLetters(producer, "writer-dlq", key_field).send(record)
+
+    assert producer.sent == [("writer-dlq", key, record)]
+
+
+def test_a_dead_letter_kafka_did_not_take_raises() -> None:
+    dead_letters = KafkaDeadLetters(FakeDlqProducer(undelivered=1), "writer-dlq")
+
+    with pytest.raises(KafkaException, match="timed out"):
+        dead_letters.send({"window_end": "2026-11-02T12:00:00Z"})

@@ -8,7 +8,11 @@ from collections.abc import Sequence
 from confluent_kafka import KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient, NewTopic
 
-from realtime_recommendation_pipeline.settings import KafkaSettings, load
+from realtime_recommendation_pipeline.settings import (
+    ContinueWatchingSettings,
+    KafkaSettings,
+    load,
+)
 
 # Records carry synthetic event times, some weeks in the past, and Kafka's
 # time-based retention reads record timestamps, so the event topics keep
@@ -26,13 +30,24 @@ def pipeline_topics(kafka: KafkaSettings) -> list[NewTopic]:
     ]
 
 
+def continue_watching_topics(settings: ContinueWatchingSettings) -> list[NewTopic]:
+    """One partition, so each user's changes reach the writer in order."""
+    return [
+        NewTopic(settings.topic, 1, 1),
+        NewTopic(settings.writer_dlq_topic, 1, 1),
+    ]
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     argparse.ArgumentParser(description=__doc__).parse_args(argv)
 
     kafka = load(KafkaSettings)
+    topics = pipeline_topics(kafka) + continue_watching_topics(
+        load(ContinueWatchingSettings)
+    )
     admin = AdminClient({"bootstrap.servers": kafka.bootstrap_servers})
 
-    for topic, future in admin.create_topics(pipeline_topics(kafka)).items():
+    for topic, future in admin.create_topics(topics).items():
         try:
             future.result(30)
             print(f"Created topic {topic}")

@@ -1,0 +1,7 @@
+parallelism,partitions,rate,duration_s,seed,started_at,produced_per_s,read_per_s,lag_end,lag_max,lag_slope_per_s,lag_trend,items_written,latency_p50_s,latency_p95_s,latency_p99_s,batch_write_p50_ms,batch_write_p95_ms,batch_write_p99_ms,busiest_task,busiest_task_busy_ms_per_s
+1,6,100,120,42,2026-11-12T10:46:42Z,100.01,100.09,327,0,-0.06,steady,880,5.61,8.68,10.17,242.45,642.31,900.14,track-progress,257.15
+1,6,200,120,42,2026-11-12T10:49:58Z,199.85,199.97,0,0,-0.04,steady,1785,6.58,11.43,13.58,200.82,700.21,1116.02,track-progress,516.4
+1,6,300,120,42,2026-11-12T10:53:24Z,300.35,302.76,0,0,-2.82,steady,2860,8.52,15.16,16.92,202.09,644.46,1085.37,track-progress,707.4
+1,6,400,120,42,2026-11-12T10:56:47Z,399.95,399.98,1342,0,0.09,steady,3564,9.32,14.37,16.23,250.87,520.9,966.65,track-progress,748.6
+1,6,500,120,42,2026-11-12T11:09:25Z,500.28,548.3,0,3756,-57.11,shrinking,3537,15.02,22.56,24.42,213.61,373.11,476.72,track-progress,945.55
+1,6,600,120,42,2026-11-12T11:12:50Z,599.95,589.52,4770,5805,25.64,growing,3033,18.72,24.81,26.48,136.81,267.05,555.33,track-progress,943.9

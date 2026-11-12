@@ -3,6 +3,11 @@ output "api_url" {
   value       = "${aws_apigatewayv2_api.trending.api_endpoint}/trending"
 }
 
+output "continue_watching_url" {
+  description = "GET this, with a user id in place of {id}, for that user's continue-watching list."
+  value       = "${aws_apigatewayv2_api.trending.api_endpoint}/users/{id}/continue-watching"
+}
+
 output "table_name" {
   value = aws_dynamodb_table.trending.name
 }

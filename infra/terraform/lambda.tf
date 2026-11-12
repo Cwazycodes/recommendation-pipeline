@@ -22,7 +22,8 @@ resource "aws_iam_role" "api" {
   })
 }
 
-# Read only: the one Query the handler makes (latest_window), and its own logs.
+# Read only: the handler's Queries (latest_window and in_progress), and its own
+# logs.
 # No logs:CreateLogGroup, so Lambda cannot recreate the group without its
 # retention.
 resource "aws_iam_role_policy" "api" {

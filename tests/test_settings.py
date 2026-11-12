@@ -4,6 +4,7 @@ import pytest
 from pydantic_settings import BaseSettings
 
 from realtime_recommendation_pipeline.settings import (
+    ContinueWatchingSettings,
     DynamoDBSettings,
     FlinkSettings,
     KafkaSettings,
@@ -20,6 +21,7 @@ SETTINGS = (
     KafkaSettings,
     FlinkSettings,
     DynamoDBSettings,
+    ContinueWatchingSettings,
     MetricsSettings,
     LogSettings,
 )

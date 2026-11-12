@@ -15,7 +15,7 @@ JOB_ARGS ?=
 SAVEPOINT ?=
 LIMIT ?= 10
 DEMO_DURATION ?= 120
-CHAOS_DRILLS ?= taskmanager kafka writer dynamodb
+CHAOS_DRILLS ?= taskmanager kafka writer dynamodb continue-watching
 MINUTES ?= 5
 TOPIC ?=
 RATES ?= 50 100 150 200 300 500 2000
@@ -28,6 +28,13 @@ BENCH_DIR ?= docs/benchmarks
 BENCH_AWS_DIR ?= docs/benchmarks/dynamodb/aws
 # The one rate make bench-aws runs, events/s.
 AWS_BENCH_RATE ?= 100
+# make cw-bench: the continue-watching job's rates, events/s, and its results.
+CW_RATES ?= 100
+CW_BENCH_DIR ?= docs/benchmarks/continue-watching
+# The user make cw-api-local asks about.
+USER_ID ?= user-00040
+# make stop-job stops the first running job whose name contains this.
+JOB_NAME ?=
 # The AWS CLI profile for make tf-plan, deploy and destroy (aws login --profile rp).
 AWS_PROFILE ?= rp
 # The results writer's profile, which assumes its role (infra/terraform/writer.tf).
@@ -42,7 +49,7 @@ TF_ARGS ?=
 .env:
 	cp .env.example .env
 
-.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local demo test-e2e chaos metrics bench bench-report writer-aws bench-aws package-lambda tf-check tf-plan deploy destroy bootstrap api-url
+.PHONY: help install fmt lint typecheck test test-flink check hooks generate up down topics logs produce test-int submit-job stop-job check-trending db-init db-smoke writer check-writer api-local cw-writer cw-writer-aws cw-api-local demo test-e2e chaos metrics bench bench-report writer-aws bench-aws cw-bench package-lambda tf-check tf-plan deploy destroy bootstrap api-url
 
 ## Show all available targets and their descriptions.
 help:
@@ -131,9 +138,9 @@ submit-job:
 		-pyfs /opt/flink/src \
 		$(JOB_ARGS)
 
-## Stop the running job and write a savepoint to the checkpoint volume.
+## Stop a running job with a savepoint to the checkpoint volume (JOB_NAME=continue-watching picks which).
 stop-job:
-	@job_id=$$(docker compose exec -T flink-jobmanager flink list -r 2>/dev/null | awk -F ' : ' '/RUNNING/ {print $$2; exit}'); \
+	@job_id=$$(docker compose exec -T flink-jobmanager flink list -r 2>/dev/null | awk -F ' : ' '/RUNNING/ && /$(JOB_NAME)/ {print $$2; exit}'); \
 	if [ -z "$$job_id" ]; then echo "No running job to stop."; exit 1; fi; \
 	docker compose exec -T flink-jobmanager sh -c "flink stop --savepointPath \$$FLINK_CHECKPOINT_DIR/savepoints $$job_id"
 
@@ -167,6 +174,20 @@ check-writer:
 api-local:
 	poetry run python -m realtime_recommendation_pipeline.tools.api_local \
 		--limit $(LIMIT)
+
+## Write continue-watching changes to DynamoDB Local (Ctrl-C stops it cleanly).
+cw-writer:
+	poetry run python -m realtime_recommendation_pipeline.writer.continue_watching_writer
+
+## Write continue-watching changes to DynamoDB in AWS instead, as the writer's role (AWS_WRITER_PROFILE).
+cw-writer-aws:
+	DYNAMODB_ENDPOINT_URL= AWS_PROFILE=$(AWS_WRITER_PROFILE) \
+		poetry run python -m realtime_recommendation_pipeline.writer.continue_watching_writer
+
+## Call the API's Lambda handler for USER_ID's continue-watching list against DynamoDB Local.
+cw-api-local:
+	poetry run python -m realtime_recommendation_pipeline.tools.api_local \
+		--user $(USER_ID) --limit $(LIMIT)
 
 ## Run the whole pipeline on demo topics with 2-minute windows and print the trending list.
 demo: up
@@ -203,6 +224,13 @@ bench-aws: up
 		poetry run python -m realtime_recommendation_pipeline.tools.bench \
 		--rates $(AWS_BENCH_RATE) --duration $(BENCH_DURATION) --seed $(SEED) \
 		--parallelism $(PARALLELISM) --partitions $(PARTITIONS) --out-dir $(BENCH_AWS_DIR)
+
+## Benchmark the continue-watching job at each of CW_RATES events/s for BENCH_DURATION s into CW_BENCH_DIR.
+cw-bench: up
+	poetry run python -m realtime_recommendation_pipeline.tools.bench_continue_watching \
+		--rates $(CW_RATES) --duration $(BENCH_DURATION) --seed $(SEED) \
+		--parallelism $(PARALLELISM) --partitions $(PARTITIONS) --out-dir $(CW_BENCH_DIR)
+
 
 # --- AWS (infra/terraform) ----------------------------------------------------
 

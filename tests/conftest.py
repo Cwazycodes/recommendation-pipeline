@@ -5,6 +5,7 @@ from collections.abc import Iterator
 import pytest
 
 from realtime_recommendation_pipeline.settings import (
+    ContinueWatchingSettings,
     DynamoDBSettings,
     FlinkSettings,
     KafkaSettings,
@@ -26,6 +27,7 @@ def no_env_file(
             KafkaSettings,
             FlinkSettings,
             DynamoDBSettings,
+            ContinueWatchingSettings,
             MetricsSettings,
             LogSettings,
         ):

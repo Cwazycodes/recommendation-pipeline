@@ -68,7 +68,7 @@ The target in design.md section 6, p95 of 30 seconds or less, is checked against
 |---|---|---|
 | Throughput | `flink_taskmanager_job_task_operator_numRecordsOut{operator_name="Source:_viewing_events_source"}` | Flink's Prometheus reporter, port 9249 in each Flink container |
 | Produced rate | `kafka_topic_partition_current_offset{topic=...}` | kafka-exporter (Compose), from Kafka |
-| Consumer lag | `kafka_topic_partition_current_offset{topic=...}` minus `flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic=...}` + 1, per partition | kafka-exporter, and the job's Kafka source |
+| Consumer lag | `kafka_topic_partition_current_offset{topic=...}` minus `flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic=...,operator_name="Source:_viewing_events_source"} + 1, per partition. Both jobs read the events topic, so the source is picked by name; the continue-watching job's is continue-watching-source | kafka-exporter, and the job's Kafka source |
 | Watermark delay | `flink_taskmanager_job_task_operator_watermarkLag{...}` (ms), same source | Flink |
 | Freshness | `trending_window_freshness_seconds` (histogram) | the results writer, `METRICS_WRITER_PORT` (9464) |
 | Delivery latency | `trending_window_delivery_seconds` (histogram) | the results writer |
@@ -106,8 +106,8 @@ In Prometheus's graph page:
 sum(rate(flink_taskmanager_job_task_operator_numRecordsOut{operator_name="Source:_viewing_events_source"}[1m]))
 # Consumer lag in records, for the demo's topic
 sum(kafka_topic_partition_current_offset{topic="viewing-events-demo"})
-  - sum(flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic="viewing_events_demo"})
-  - count(flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic="viewing_events_demo"})
+  - sum(flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic="viewing_events_demo",operator_name="Source:_viewing_events_source"})
+  - count(flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition_currentOffset{topic="viewing_events_demo",operator_name="Source:_viewing_events_source"})
 # Freshness p95 over the last 5 minutes
 histogram_quantile(0.95, sum by (le) (rate(trending_window_freshness_seconds_bucket[5m])))
 ```

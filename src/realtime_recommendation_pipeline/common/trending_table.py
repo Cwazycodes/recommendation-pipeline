@@ -85,6 +85,18 @@ def create_table_if_missing(client: Any, definition: Mapping[str, Any]) -> bool:
     return created
 
 
+def recreate_table(client: Any, definition: Mapping[str, Any], name: str) -> None:
+    """Delete the table called name, if it exists, and create it empty from the
+    definition, for the drills and benchmarks that need a table of their own."""
+    try:
+        client.delete_table(TableName=name)
+        client.get_waiter("table_not_exists").wait(TableName=name)
+    except client.exceptions.ResourceNotFoundException:
+        pass
+
+    create_table_if_missing(client, {**definition, "TableName": name})
+
+
 def window_item(
     window_end: str,
     items: Sequence[Mapping[str, Any]],
