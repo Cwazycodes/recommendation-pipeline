@@ -13,6 +13,8 @@ from pyflink.datastream import (
 from pyflink.datastream.connectors.kafka import KafkaOffsetsInitializer, KafkaSource
 from pyflink.table import StreamTableEnvironment
 
+from realtime_recommendation_pipeline.common.event_schemas import WriterSchemas
+from realtime_recommendation_pipeline.common.schema_registry import SchemaRegistry
 from realtime_recommendation_pipeline.flink_jobs.dedup import deduplicate
 from realtime_recommendation_pipeline.flink_jobs.event_time import (
     to_events_table,
@@ -28,7 +30,10 @@ from realtime_recommendation_pipeline.flink_jobs.trending import (
     to_trending_json,
     trending_table,
 )
-from realtime_recommendation_pipeline.flink_jobs.validation import validate_event
+from realtime_recommendation_pipeline.flink_jobs.validation import (
+    KAFKA_VALUE_CHARSET,
+    validate_event,
+)
 from realtime_recommendation_pipeline.settings import FlinkSettings, KafkaSettings, load
 
 # One shared tag: the function emits to it and get_side_output() reads it.
@@ -38,13 +43,16 @@ DLQ_TAG = OutputTag("dead-letters", Types.STRING())
 class ValidateEvents(ProcessFunction):
     """Send valid events downstream and invalid ones to the DLQ side output."""
 
+    def __init__(self, writer_schemas: WriterSchemas) -> None:
+        self.writer_schemas = writer_schemas
+
     def open(self, runtime_context: RuntimeContext) -> None:
         metrics = runtime_context.get_metrics_group()
         self.valid_events = metrics.counter("valid_events")
         self.dead_lettered_events = metrics.counter("dead_lettered_events")
 
     def process_element(self, value, ctx):
-        result = validate_event(value)
+        result = validate_event(value.encode(KAFKA_VALUE_CHARSET), self.writer_schemas)
 
         if result.event is not None:
             self.valid_events.inc()
@@ -74,7 +82,8 @@ def main() -> None:
         .set_topics(job.source_topic)
         .set_group_id(flink.source_group_id)
         .set_starting_offsets(KafkaOffsetsInitializer.earliest())
-        .set_value_only_deserializer(SimpleStringSchema())
+        # Avro bytes, as a string that encodes back to them (validation.py).
+        .set_value_only_deserializer(SimpleStringSchema(KAFKA_VALUE_CHARSET))
         .build()
     )
 
@@ -88,8 +97,10 @@ def main() -> None:
         "viewing-events-source",
     ).uid("viewing-events-source")
 
+    registry = SchemaRegistry(flink.schema_registry_url)
+
     valid_events = raw_events.process(
-        ValidateEvents(),
+        ValidateEvents(WriterSchemas(registry.schema)),
         output_type=Types.STRING(),
     ).name("validate-events")
 

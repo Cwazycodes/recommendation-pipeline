@@ -17,6 +17,7 @@ The project uses a hybrid local/cloud architecture. The README has a diagram, an
 
 - **Python:** synthetic event generation, test utilities, and performance measurement.
 - **Kafka:** event ingestion and buffering.
+- **Schema Registry:** the event's Avro schemas, and whether a change to them is compatible.
 - **Apache Flink:** stream processing, event-time windows, aggregation, and ranking.
 - **AWS DynamoDB:** persistence of the latest recommendation results.
 - **AWS Lambda:** API for retrieving the current trending programmes.
@@ -25,24 +26,36 @@ The project uses a hybrid local/cloud architecture. The README has a diagram, an
 
 The intended data flow is:
 
-Synthetic event generator → Kafka → Flink → DynamoDB → Lambda read API → Client.
+Synthetic event generator → Kafka (Avro, schemas in the Schema Registry) → Flink → DynamoDB → Lambda read API → Client.
 
 Kafka and Flink run locally during development. DynamoDB and Lambda run in AWS. Tests should support local execution wherever practical, with cloud integration tests separated from the default test suite.
 
 ## 3. Event schema
 
-Each viewing event contains:
+Events are Avro on `viewing-events`, one schema version per file in [`schemas/viewing_event/`](../src/realtime_recommendation_pipeline/schemas/viewing_event/). [ADR 6](adr/0006-avro-events.md) has the trade-offs.
 
-| Field | Type | Description |
-|---|---|---|
-| `event_id` | string | Globally unique synthetic event identifier |
-| `user_id` | string | Synthetic viewer identifier |
-| `programme_id` | string | Identifier from the invented programme catalogue |
-| `event_type` | string | For example, `play`, `progress`, or `complete` |
-| `event_time` | timestamp | UTC time when the viewing event occurred |
-| `duration_seconds` | integer | Viewing duration associated with the event, where applicable |
+| Field | Avro type | Since | Description |
+|---|---|---|---|
+| `event_id` | `string` (logical type `uuid`) | v1 | Unique per event; a repeat of an event has the same one |
+| `user_id` | `string` | v1 | Generated viewer id, such as `user-00040` |
+| `programme_id` | `string` | v1 | From the invented catalogue, such as `programme-0001` |
+| `event_type` | enum | v1 | `play_start`, `heartbeat` (every 30 s), `pause` or `play_end` |
+| `position_s` | `double` | v1 | Seconds into the programme |
+| `duration_s` | `double` or null | v1 | The programme's length in seconds, null when not known |
+| `device` | `string` | v1 | `smart_tv`, `mobile`, `tablet` or `web` |
+| `event_time` | `long` | v1 | When it happened, in epoch milliseconds (UTC) |
+| `produced_at` | `long` | v1 | When the producer sent it, in epoch milliseconds (UTC) |
+| `session_id` | `string` or null, default null | v2 | The same for every event of one sitting |
 
-All events use invented catalogue entries and generated user identifiers. The initial trending calculation counts eligible viewing events; it does not attempt to infer individual preferences.
+- **On the wire:** the Schema Registry's format: a zero byte, the 4-byte id the registry gave the writer's schema, then the event in Avro's binary encoding (`common/event_schemas.py`). The producer registers the version it writes (`make produce SCHEMA_VERSION=1`; the newest by default) under one subject for the record, `recommendation_pipeline.ViewingEvent`, whatever the topic, so the demo, chaos and benchmark topics share it.
+- **Compatibility:** the registry (`schema-registry` in Compose, `http://localhost:8085` from the host) holds every version and is set to `FULL_TRANSITIVE`: a new version must read events written with every earlier one, and every earlier one must read it. It refuses a version that breaks that, so a producer with a breaking schema stops before it sends anything. Adding an optional field with a default passes; adding a field with no default, removing one that had none, changing a type, renaming a field or adding an `event_type` does not.
+- **Reading:** a job decodes each event with the writer's schema, fetched from the registry by its id once and then kept, and with its own reader schema. Both jobs read as v1, so a v2 event loses `session_id` on the way in, and a v1 event read by a v2 reader gets null. The Pydantic model (`common/events.py`) then checks what Avro cannot: a UUID `event_id`, non-empty ids and device, and no negative position, duration or time.
+- **Dead letters:** an event that fails goes to `viewing-events-dlq` with an `error_type`: `not_avro` (no zero byte and id, such as JSON), `unknown_schema` (an id the registry does not have), `invalid_avro` (bytes that do not decode with the schema their id names) or `schema_violation` (decoded, but against the rules). Each record also has the `reason`, the `schema_id`, the bytes in `raw_base64`, the decoded `event` when there is one, and `failed_at`. A registry that cannot be reached is not a reason to dead-letter: the job fails, and Flink restarts it until the registry answers.
+- **Changing it:** add `vN.avsc` and leave released files alone. `make schema-check` asks the stack's registry whether the versions in the working tree are compatible with those on `main`, and CI runs it on every pull request.
+- **Testing:** unit tests encode and decode every version, read v2 events as v1 and v1 events as v2, and cover each kind of dead letter. `make test-registry` runs against the stack's registry: v1 and then v2 are accepted, five kinds of breaking v3 are refused, so is a version that suits the newest but not an older one, and `make schema-check` fails on a breaking v3 or a released file edited in place. The `schema` drill in [reliability.md](reliability.md) moves the producers from v1 to v2 halfway through a run while the job runs on.
+
+All events use invented catalogue entries and generated user identifiers. The trending calculation counts eligible viewing events; it does not attempt to infer individual preferences.
+
 
 ## 4. Windowing and ranking
 
@@ -65,7 +78,7 @@ Windows use `event_time`, the moment the viewer's action happened, not the time 
 - **Idleness:** a partition that delivers nothing for 60 seconds is marked idle and stops holding the watermark back. When it delivers again it rejoins.
 - **What counts as late:** an event whose `event_time` is at or before the current watermark, meaning more than 30 seconds behind the newest event in its partition, or behind the others after its partition was idle.
 - **What happens beyond the bound:** a late event still passes validation and deduplication. In a window aggregation it is counted if its window has not fired yet; if the window has already fired, the window operator drops it and counts it in its `numLateRecordsDropped` metric. Published results are never revised (no allowed lateness), which keeps historical results stable.
-- **Malformed events:** when `event_time` is not an integer the producer stamps the record with `produced_at`, so a bad event cannot push a partition's watermark ahead. It is dead-lettered as before.
+- **Malformed events:** when `event_time` is not an integer the producer stamps the record with `produced_at`, so a bad event cannot push a partition's watermark ahead. Avro cannot hold it, so it reaches the topic as JSON and is dead-lettered as not_avro.
 - **Known risk:** a well-formed but far-future `event_time` would advance its partition's watermark and make the events that follow late. Validation does not check plausibility yet.
 - **Retention:** the event topics use `retention.ms=-1` locally, because Kafka's time-based retention reads record timestamps and synthetic event times can be weeks old.
 
@@ -205,7 +218,7 @@ The smallest production-like version costs about $280 a month (2 small brokers, 
 - **Kept apart from the 1-hour pipeline:** the demo has its own topics (`viewing-events-demo`, `trending-results-demo`, `viewing-events-dlq-demo`, `trending-writer-dlq-demo`), deleted and created empty on every run, a new writer consumer group each run, and its own partition key, `TRENDING#2m`, in the same table. The exactly-once sink's transactional ID prefix includes the topic, so the demo job can run beside the 1-hour job without fencing its transactions. The 1-hour job's topics, offsets and `TRENDING#1h` items are never touched.
 - **Agreed time:** the first window must reach DynamoDB within 90 seconds of the first event. By construction it takes about 50: the first window ends within 10 s, fires once the watermark (newest event time minus 30 s) passes its end, and becomes visible to `read_committed` readers at the next checkpoint, at most 10 s later. `make test-e2e` runs the demo for 60 seconds on the running stack and asserts this.
 - **Rate:** 50 events a second. Validation and deduplication run as Python functions; in the RP-19 restart test the job worked through about 110 events a second while sharing the laptop with a second stack. If the producer outpaces the job, the watermark falls behind the wall clock and windows fire late.
-- **Memory:** the stack needs most of a 4 GB Docker VM (Kafka, the Flink JobManager and TaskManager, DynamoDB Local, Prometheus and kafka-exporter), so run one stack at a time. Two stacks got containers killed for running out of memory.
+- **Memory:** the stack needs most of a 4 GB Docker VM (Kafka, the Schema Registry,the Flink JobManager and TaskManager, DynamoDB Local, Prometheus and kafka-exporter), so run one stack at a time. Two stacks got containers killed for running out of memory.
 
 ### Configuration and logs
 
@@ -213,11 +226,11 @@ Every setting that differs between machines comes from the environment, read wit
 
 - **Where values come from:** environment variables first, then a `.env` file in the working directory. `.env.example` is committed and lists every variable with the local stack's value and what it is for. `.env` is ignored by git; `make install` and `make up` create it from `.env.example` when it is missing, so a fresh clone runs without editing anything. make never reads `.env` itself, so a variable set in the shell still wins when a tool runs through make. In AWS the same variables are set on the Lambda function and no file is read.
 - **No defaults for addresses or names:** hosts, ports, topics, consumer groups, the table and the partition key have no default in the code. A missing one stops the program with an error that names the variable and points at `.env.example`, instead of a silent fallback to a local address. The log level (`INFO`) is the only default.
-- **One class per component:** `KafkaSettings` (`KAFKA_*`), `FlinkSettings` (`FLINK_*`), `DynamoDBSettings` (`DYNAMODB_*`),`ContinueWatchingSettings` (`CONTINUE_WATCHING_*`), `MetricsSettings` (`METRICS_*`) and `LogSettings` (`LOG_LEVEL`). Each program loads only what it uses, so the Lambda handler needs nothing but the `DYNAMODB_*` variables. `settings.py` imports nothing else from the package, so the Flink job can load it without boto3.
-- **Inside the Compose network:** the Flink job's main runs in the JobManager container, where Kafka is `kafka:29092` rather than `localhost:9092`, so the job uses `FLINK_KAFKA_BOOTSTRAP_SERVERS`. Compose passes `.env` to both Flink containers (`env_file`), and the Flink image includes pydantic-settings.
+- **One class per component:** `KafkaSettings` (`KAFKA_*`), `FlinkSettings` (`FLINK_*`), DynamoDBSettings (DYNAMODB_*), ContinueWatchingSettings (CONTINUE_WATCHING_*), SchemaRegistrySettings (SCHEMA_REGISTRY_URL), `MetricsSettings` (`METRICS_*`) and `LogSettings` (`LOG_LEVEL`). Each program loads only what it uses, so the Lambda handler needs nothing but the `DYNAMODB_*` variables. `settings.py` imports nothing else from the package, so the Flink job can load it without boto3.
+- **Inside the Compose network:** the Flink job's main runs in the JobManager container, where Kafka is kafka:29092 rather than localhost:9092 and the registry schema-registry:8081 rather than localhost:8085, so the jobs use FLINK_KAFKA_BOOTSTRAP_SERVERS and FLINK_SCHEMA_REGISTRY_URL. Compose passes `.env` to both Flink containers (`env_file`), and the Flink image includes pydantic-settings.
 - **Tests read no `.env`:** a fixture in `tests/conftest.py` turns the file off, so each test sees only the variables it sets, and a laptop behaves like CI. The end-to-end tests are the exception, because they run against the local stack.
 - **Logs:** the producer, the results writer and the read API write one JSON object per line (`common/logs.py`): `timestamp`, `level`, `service`, `logger` and `message`, plus fields for whatever the line is about. Lines about an event carry its `event_id`; lines about a window carry its `window_end`. `LOG_LEVEL=DEBUG` adds a line for every event the producer delivers.
-- **Tracing one result:** the API's line for a request names the `window_end` it served. The writer's `wrote window` line for that `window_end` gives its `generated_at`: the latest `emitted_at` of the window's rows on the trending topic, where the Flink job wrote them. The window holds the events whose `event_time` falls in the hour before `window_end`, and the producer's `event delivered` lines give each one's `event_id`, partition and offset. Events that failed validation are on the DLQ topic with their payload, `event_id` included. For example:
+- **Tracing one result:** the API's line for a request names the `window_end` it served. The writer's `wrote window` line for that `window_end` gives its `generated_at`: the latest `emitted_at` of the window's rows on the trending topic, where the Flink job wrote them. The window holds the events whose `event_time` falls in the hour before `window_end`, and the producer's `event delivered` lines give each one's `event_id`, partition and offset. Events that failed validation are on the DLQ topic with their bytes and, if they decoded, the event, event_id included (section 3). For example:
 
   ```bash
   LOG_LEVEL=DEBUG make produce 2> producer.log

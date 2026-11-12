@@ -16,6 +16,7 @@ from realtime_recommendation_pipeline.settings import (
     FlinkSettings,
     KafkaSettings,
     MetricsSettings,
+    SchemaRegistrySettings,
 )
 from realtime_recommendation_pipeline.tools import chaos
 from realtime_recommendation_pipeline.tools.chaos import (
@@ -94,6 +95,7 @@ def test_the_drills_writer_uses_the_drills_topics_and_table(
         FlinkSettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
         DynamoDBSettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
         MetricsSettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
+        SchemaRegistrySettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
     )
 
     writer = ContinueWatchingWriterProcess(settings, "chaos-cw-writer-1")

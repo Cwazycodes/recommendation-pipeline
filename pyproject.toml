@@ -13,6 +13,7 @@ dependencies = [
     "boto3[crt] (>=1.43,<2.0)",
     "pydantic-settings (>=2.16,<3.0)",
     "prometheus-client (>=0.21,<1.0)",
+    "fastavro (>=1.9,<2)",
 ]
 
 [dependency-groups]
@@ -61,4 +62,5 @@ markers = [
     "integration: tests requiring a running Docker environment",
     "slow: tests that run a local Flink mini-cluster (need Java)",
     "e2e: tests that run the whole pipeline on the Compose stack (make test-e2e)",
+    "registry: tests against the Schema Registry of the Compose stack (make test-registry)",
 ]

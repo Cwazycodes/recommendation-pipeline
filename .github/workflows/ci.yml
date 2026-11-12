@@ -119,6 +119,48 @@ jobs:
       - name: Run Kafka integration tests
         run: make test-int
 
+  schema:
+    name: Event schema compatibility
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # All history, so origin/main is there to compare with.
+          fetch-depth: 0
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.5.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: poetry
+          cache-dependency-path: poetry.lock
+
+      - name: Install dependencies
+        run: poetry install
+
+      # The same Kafka and Schema Registry as the local stack, from
+      # docker-compose.yml, so CI gets the answer a producer would.
+      - name: Start Kafka and the Schema Registry
+        run: |
+          cp .env.example .env
+          docker compose up -d --wait schema-registry
+
+      # Fails if a schema in this branch would break one released on main.
+      - name: Check the event schemas against main
+        run: make schema-check SCHEMA_BASE=origin/main
+
+      - name: Run the Schema Registry tests
+        run: make test-registry
+
   terraform:
     name: Terraform format and validate
     runs-on: ubuntu-latest

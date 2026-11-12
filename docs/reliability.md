@@ -1,12 +1,12 @@
 # Reliability drills
 
-"Reliable" only counts if the pipeline survives things going wrong, so `make chaos` breaks it on purpose in five ways and checks the outcome the design promises for each. Below, each drill has the script that runs it, the expected outcome and the reason for it, and the result recorded by the last full run.
+"Reliable" only counts if the pipeline survives things going wrong, so `make chaos` breaks it on purpose in six ways and checks the outcome the design promises for each. Below, each drill has the script that runs it, the expected outcome and the reason for it, and the result recorded by the last full run.
 
 ## Running them
 
 ```bash
 make up
-make chaos                                   # # all five, about 20 minutes; records the results below
+make chaos                                   # all six, about 25 minutes; records the results below
 make chaos CHAOS_DRILLS="writer dynamodb"    # some of them; prints the results without recording them
 ```
 
@@ -43,6 +43,12 @@ The drills have their own topics (`viewing-events-chaos`, `trending-results-chao
 - **Expected:** the table ends with exactly the programmes `continue_watching_oracle.py` has in progress for the same events: the same users and programmes, with the same position, duration and last-watched time, and nothing missing or extra.
 - **Why:** the job's keyed state and the source offsets come back from the same checkpoint, and the open transaction is aborted and its changes published again, as in drill 1, so the committed changes are what an uninterrupted job would publish. The writer commits after it writes, so a restart replays at most a batch, and applying changes again in order leaves the same table. Unlike drills 1 to 4 it checks the end result, the table, rather than each step.
 
+## 6. Producers move to schema v2 mid-stream (`schema`)
+
+- **What the script does:** runs the production job on the chaos topics with the same 6,276 events as drill 1, but the producer writes the first half in v1 of the event schema and the second half in v2, which adds `session_id`, the way producers upgraded one by one would. The job is left alone: it is not stopped, redeployed or told about v2.
+- **Expected:** the job reads through the switch without restarting, dead-letters nothing, and every committed row matches `trending_oracle.py`, as in drill 1.
+- **Why:** each event carries the id of the schema it was written with. The job fetches v2 from the registry the first time it meets that id and reads the event with its own v1 schema, which drops `session_id`. v2 only adds an optional field, which `FULL_TRANSITIVE` allows, so a compatible change reaches the topic with nothing downstream redeployed. A breaking change never gets this far: the registry refuses it when the producer starts, which `make test-registry` and CI check ([design.md](design.md), section 3).
+
 ## What these drills do not show
 
 - **One broker, one TaskManager, local disks.** Losing a disk loses the checkpoints or the Kafka log; surviving that needs replicated topics and remote checkpoint storage.
@@ -53,14 +59,15 @@ The drills have their own topics (`viewing-events-chaos`, `trending-results-chao
 
 <!-- chaos-results:start -->
 
-Recorded with `make chaos` on 2026-11-12 10:41 UTC, commit `7680919 plus local changes`, Docker VM with 8 CPUs and 3.8 GB.
+Recorded with `make chaos` on 2026-11-12 21:07 UTC, commit `da47723 plus local changes`, Docker VM with 8 CPUs and 3.8 GB.
 
 | Drill | Result | Observed |
 |---|---|---|
-| TaskManager killed mid-stream | Pass | TaskManager killed with 1 checkpoint(s) completed; running again 29 s later, restored from checkpoint 1<br>6276 of 6276 events delivered, 6276 in the topic<br>374 committed rows in 22 windows match the oracle, none repeated |
+| TaskManager killed mid-stream | Pass | TaskManager killed with 2 checkpoint(s) completed; running again 56 s later, restored from checkpoint 2<br>6276 of 6276 events delivered, 6276 in the topic<br>374 committed rows in 22 windows match the oracle, none repeated |
 | Kafka broker restarted mid-stream | Pass | broker back after 22 s; the job rode it out without restarting<br>6276 of 6276 events delivered, 6276 in the topic<br>374 committed rows in 22 windows match the oracle, none repeated |
 | Writer killed mid-batch | Pass | killed 3 times mid-stream; 60 writes for 60 windows, so 0 written again after a kill<br>60 items for 60 windows: all complete, none repeated |
-| DynamoDB unreachable | Pass | outage 31 s: 7 backed-off retries, committed offset 273 -> 273, 0 writes<br>caught up 9 s after the last window<br>60 items for 60 windows: all complete, none repeated |
-| Continue watching: TaskManager and writer killed | Pass | TaskManager killed with 1 checkpoint(s) completed; running again 37 s later, restored from checkpoint 1<br>writer killed after 6 batches and started again at once<br>104 in-progress programmes for 101 users match the oracle; the 4 finished ones are not listed |
+| DynamoDB unreachable | Pass | outage 31 s: 8 backed-off retries, committed offset 252 -> 252, 0 writes<br>caught up 7 s after the last window<br>60 items for 60 windows: all complete, none repeated |
+| Continue watching: TaskManager and writer killed | Pass | TaskManager killed with 1 checkpoint(s) completed; running again 28 s later, restored from checkpoint 1<br>writer killed after 5 batches and started again at once<br>104 in-progress programmes for 101 users match the oracle; the 4 finished ones are not listed |
+| Producers move to schema v2 mid-stream | Pass | the first 3138 events written as v1 (schema id 27) and the other 3138 as v2 (id 28)<br>the job read both without restarting<br>6276 of 6276 events delivered, 6276 in the topic<br>374 committed rows in 22 windows match the oracle, none repeated<br>nothing dead-lettered |
 
 <!-- chaos-results:end -->

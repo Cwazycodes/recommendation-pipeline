@@ -1,5 +1,12 @@
+"""The viewing event, as the jobs accept it.
+
+The Avro schemas (schemas/viewing_event/) fix the fields and their types; this
+model adds the rules Avro cannot express, such as a UUID event_id, non-empty
+ids and no negative times.
+"""
+
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,7 +29,6 @@ class ViewingEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_id: UUID
-    schema_version: Literal[1] = 1
     user_id: NonEmptyString
     programme_id: NonEmptyString
     event_type: ViewingEventType
@@ -31,3 +37,5 @@ class ViewingEvent(BaseModel):
     device: NonEmptyString
     event_time: TimestampMs
     produced_at: TimestampMs
+    # New in v2 of the schema. The jobs read events as v1, so they never see it.
+    session_id: NonEmptyString | None = None

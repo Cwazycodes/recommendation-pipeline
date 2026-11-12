@@ -11,6 +11,7 @@ from realtime_recommendation_pipeline.settings import (
     KafkaSettings,
     LogSettings,
     MetricsSettings,
+    SchemaRegistrySettings,
 )
 
 
@@ -20,14 +21,16 @@ def no_env_file(
 ) -> Iterator[None]:
     """Settings come only from what a test sets, never from a developer's .env.
 
-    End-to-end tests run against the local stack, so they keep reading .env.
+    End-to-end and registry tests run against the local stack, so they keep
+    reading .env.
     """
-    if request.node.get_closest_marker("e2e") is None:
+    if not any(request.node.get_closest_marker(m) for m in ("e2e", "registry")):
         for settings_class in (
             KafkaSettings,
             FlinkSettings,
             DynamoDBSettings,
             ContinueWatchingSettings,
+            SchemaRegistrySettings,
             MetricsSettings,
             LogSettings,
         ):

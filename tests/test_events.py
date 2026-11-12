@@ -10,7 +10,6 @@ from realtime_recommendation_pipeline.common.events import ViewingEvent
 def valid_event() -> dict[str, object]:
     return {
         "event_id": str(uuid4()),
-        "schema_version": 1,
         "user_id": "user-001",
         "programme_id": "programme-001",
         "event_type": "play_start",
@@ -27,7 +26,8 @@ def test_valid_event_is_parsed(valid_event: dict[str, object]) -> None:
 
     assert str(event.event_id) == valid_event["event_id"]
     assert event.event_type == "play_start"
-    assert event.schema_version == 1
+    # A v1 event has no session_id.
+    assert event.session_id is None
 
 
 @pytest.mark.parametrize(
@@ -58,7 +58,7 @@ def test_missing_required_field_is_rejected(
     ("field", "value"),
     [
         ("event_id", "not-a-uuid"),
-        ("schema_version", 2),
+        ("session_id", ""),
         ("event_type", "rewind"),
         ("position_s", -1),
         ("duration_s", -10),
@@ -89,3 +89,11 @@ def test_unknown_duration_is_allowed(
     event = ViewingEvent.model_validate(valid_event)
 
     assert event.duration_s is None
+
+
+def test_session_id_from_v2_is_kept(valid_event: dict[str, object]) -> None:
+    valid_event["session_id"] = "session-1"
+
+    event = ViewingEvent.model_validate(valid_event)
+
+    assert event.session_id == "session-1"

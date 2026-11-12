@@ -53,10 +53,20 @@ class FlinkSettings(BaseSettings):
     model_config = settings_config("FLINK_")
 
     rest_url: str
-    # Kafka as the job reaches it from inside the Compose network.
+    # Kafka and the Schema Registry as the jobs reach them from inside the
+    # Compose network.
     kafka_bootstrap_servers: str
+    schema_registry_url: str
     source_group_id: str
     checkpoint_dir: str
+
+
+class SchemaRegistrySettings(BaseSettings):
+    """The Schema Registry, as the producer and the tools reach it."""
+
+    model_config = settings_config("SCHEMA_REGISTRY_")
+
+    url: str
 
 
 class DynamoDBSettings(BaseSettings):

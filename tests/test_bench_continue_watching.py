@@ -7,6 +7,7 @@ from realtime_recommendation_pipeline.settings import (
     FlinkSettings,
     KafkaSettings,
     MetricsSettings,
+    SchemaRegistrySettings,
 )
 from realtime_recommendation_pipeline.tools.bench import (
     Run,
@@ -86,6 +87,7 @@ def test_the_benchmark_refuses_dynamodb_in_aws(tmp_path: Path) -> None:
         # No endpoint: boto3 would use the table in AWS.
         DynamoDBSettings(_env_file=ENV_EXAMPLE, endpoint_url=None),  # type: ignore[call-arg]
         MetricsSettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
+        SchemaRegistrySettings(_env_file=ENV_EXAMPLE),  # type: ignore[call-arg]
     )
 
     with pytest.raises(DemoError, match="DynamoDB Local"):

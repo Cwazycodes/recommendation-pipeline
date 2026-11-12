@@ -80,13 +80,13 @@ def make_event(
     duration_s: float,
     event_time: int,
     produced_at: int,
+    session_id: str,
 ) -> dict[str, object]:
-    """Create an event that conforms to the RP-07 contract."""
+    """Create an event that conforms to the event contract."""
     event_id = uuid5(NAMESPACE, f"{seed}:{sequence}")
 
     event = ViewingEvent(
         event_id=event_id,
-        schema_version=1,
         user_id=user_id,
         programme_id=programme_id,
         event_type=event_type,
@@ -95,6 +95,7 @@ def make_event(
         device="smart_tv",
         event_time=event_time,
         produced_at=produced_at,
+        session_id=session_id,
     )
 
     return event.model_dump(mode="json")
@@ -140,6 +141,7 @@ def generate_valid_events(
         duration_s = float(rng.randint(600, 7_200))
         watched_s = rng.randint(30, int(duration_s))
         device = rng.choice(["smart_tv", "mobile", "tablet", "web"])
+        session_id = str(uuid5(NAMESPACE, f"{seed}:session:{session_number}"))
 
         def append_event(
             event_type: ViewingEventType,
@@ -150,6 +152,7 @@ def generate_valid_events(
             programme_id: str = programme_id,
             duration_s: float = duration_s,
             device: str = device,
+            session_id: str = session_id,
         ) -> None:
             nonlocal sequence
 
@@ -166,6 +169,7 @@ def generate_valid_events(
                 duration_s=duration_s,
                 event_time=event_time,
                 produced_at=produced_at,
+                session_id=session_id,
             )
 
             event["device"] = device
