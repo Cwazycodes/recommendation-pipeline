@@ -1,16 +1,16 @@
 # Reliability drills
 
-"Reliable" only counts if the pipeline survives things going wrong, so `make chaos` breaks it on purpose in four ways and checks the outcome the design promises for each. Below, each drill has the script that runs it, the expected outcome and the reason for it, and the result recorded by the last full run.
+"Reliable" only counts if the pipeline survives things going wrong, so `make chaos` breaks it on purpose in five ways and checks the outcome the design promises for each. Below, each drill has the script that runs it, the expected outcome and the reason for it, and the result recorded by the last full run.
 
 ## Running them
 
 ```bash
 make up
-make chaos                                   # all four, about 15 minutes; records the results below
+make chaos                                   # # all five, about 20 minutes; records the results below
 make chaos CHAOS_DRILLS="writer dynamodb"    # some of them; prints the results without recording them
 ```
 
-The drills have their own topics (`viewing-events-chaos`, `trending-results-chaos`, `viewing-events-dlq-chaos`, `trending-writer-dlq-chaos`) and their own partition key (`CHAOS#1h`), so they never read or change the pipeline's data. They do kill, restart and stop the shared containers, so anything else running on the stack is disrupted while they run. Whatever a drill stops is started again, even if the drill fails. The script is [`tools/chaos.py`](../src/realtime_recommendation_pipeline/tools/chaos.py).
+The drills have their own topics (`viewing-events-chaos`, `trending-results-chaos`, `viewing-events-dlq-chaos`, `trending-writer-dlq-chaos`, and for drill 5 `viewing-events-cw-chaos`, `continue-watching-chaos` and `continue-watching-writer-dlq-chaos`), their own partition key (`CHAOS#1h`) and, for drill 5, their own table (`continue-watching-chaos`), so they never read or change the pipeline's data. They do kill, restart and stop the shared containers, so anything else running on the stack is disrupted while they run. Whatever a drill stops is started again, even if the drill fails. The script is [`tools/chaos.py`](../src/realtime_recommendation_pipeline/tools/chaos.py).
 
 ## 1. TaskManager killed mid-stream (`taskmanager`)
 
@@ -37,6 +37,12 @@ The drills have their own topics (`viewing-events-chaos`, `trending-results-chao
 - **Expected:** while DynamoDB is down the writer writes nothing and commits nothing (its committed offset is the same 5 s and 30 s into the outage), logs a backed-off retry each time, and dead-letters nothing. Once DynamoDB is back it catches up, and the table matches the topic as in drill 3.
 - **Why:** refused and timed-out connections are not `ClientError`s, so they never count towards the five tries that lead to the DLQ. The writer waits them out with backoff from 1 s up to 30 s, with jitter, and commits nothing meanwhile. It does not poll Kafka while it waits; heartbeats keep it in its group, and `max.poll.interval.ms` is 30 minutes, so an outage up to that long does not cost it its partition.
 
+## 5. Continue watching: TaskManager and writer killed (`continue-watching`)
+
+- **What the script does:** runs the continue-watching job and its writer, as a separate process, on topics and a table of their own, with the same 6,276 events as drills 1 and 2. Once a checkpoint has completed and changes have been committed, it kills the TaskManager with SIGKILL and starts it again 10 seconds later. Once the writer has written three more batches, it kills the writer with SIGKILL and starts it again at once.
+- **Expected:** the table ends with exactly the programmes `continue_watching_oracle.py` has in progress for the same events: the same users and programmes, with the same position, duration and last-watched time, and nothing missing or extra.
+- **Why:** the job's keyed state and the source offsets come back from the same checkpoint, and the open transaction is aborted and its changes published again, as in drill 1, so the committed changes are what an uninterrupted job would publish. The writer commits after it writes, so a restart replays at most a batch, and applying changes again in order leaves the same table. Unlike drills 1 to 4 it checks the end result, the table, rather than each step.
+
 ## What these drills do not show
 
 - **One broker, one TaskManager, local disks.** Losing a disk loses the checkpoints or the Kafka log; surviving that needs replicated topics and remote checkpoint storage.
@@ -47,13 +53,14 @@ The drills have their own topics (`viewing-events-chaos`, `trending-results-chao
 
 <!-- chaos-results:start -->
 
-Recorded with `make chaos` on 2026-11-05 21:06 UTC, commit `0b276d9 plus local changes`, Docker VM with 8 CPUs and 3.8 GB.
+Recorded with `make chaos` on 2026-11-12 10:41 UTC, commit `7680919 plus local changes`, Docker VM with 8 CPUs and 3.8 GB.
 
 | Drill | Result | Observed |
 |---|---|---|
-| TaskManager killed mid-stream | Pass | killed with 1 checkpoint(s) completed; running again 28 s later, restored from checkpoint 2<br>6276 of 6276 events delivered, 6276 in the topic<br>374 committed rows in 22 windows match the oracle, none repeated |
-| Kafka broker restarted mid-stream | Pass | broker back after 16 s; the job rode it out without restarting<br>6276 of 6276 events delivered, 6276 in the topic<br>374 committed rows in 22 windows match the oracle, none repeated |
+| TaskManager killed mid-stream | Pass | TaskManager killed with 1 checkpoint(s) completed; running again 29 s later, restored from checkpoint 1<br>6276 of 6276 events delivered, 6276 in the topic<br>374 committed rows in 22 windows match the oracle, none repeated |
+| Kafka broker restarted mid-stream | Pass | broker back after 22 s; the job rode it out without restarting<br>6276 of 6276 events delivered, 6276 in the topic<br>374 committed rows in 22 windows match the oracle, none repeated |
 | Writer killed mid-batch | Pass | killed 3 times mid-stream; 60 writes for 60 windows, so 0 written again after a kill<br>60 items for 60 windows: all complete, none repeated |
-| DynamoDB unreachable | Pass | outage 31 s: 7 backed-off retries, committed offset 252 -> 252, 0 writes<br>caught up 0 s after the last window<br>60 items for 60 windows: all complete, none repeated |
+| DynamoDB unreachable | Pass | outage 31 s: 7 backed-off retries, committed offset 273 -> 273, 0 writes<br>caught up 9 s after the last window<br>60 items for 60 windows: all complete, none repeated |
+| Continue watching: TaskManager and writer killed | Pass | TaskManager killed with 1 checkpoint(s) completed; running again 37 s later, restored from checkpoint 1<br>writer killed after 6 batches and started again at once<br>104 in-progress programmes for 101 users match the oracle; the 4 finished ones are not listed |
 
 <!-- chaos-results:end -->

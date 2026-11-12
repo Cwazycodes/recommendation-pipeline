@@ -104,6 +104,28 @@ The same benchmark, once, with the results writer on the real table in eu-west-2
 
 Moving the table to AWS changed nothing that matters. A put took 37 ms at the median against DynamoDB Local and 28 ms against DynamoDB in London: DynamoDB Local is a Java process in the same memory-starved Docker VM as Kafka and Flink, so it is no faster than the real thing, and its slowest puts were slower (p95 775 ms against 388 ms). With 9 windows a run, p95 and p99 are the slowest one or two puts. Throughput and lag are the same. Processing latency differs (p50 7.2 s against 12.8 s) because of delivery, which depends on where the 10-second checkpoints fall relative to the windows and varies from run to run ([metrics.md](metrics.md)): its median was 2.3 s in the local run and 5.3 s in the AWS one. A window is one put every 10 seconds, so even a 400 ms put is small next to the checkpoint wait, and DynamoDB on demand takes thousands of writes a second; the table would only matter to a writer that wrote far more often.
 
+## Continue watching
+
+The continue-watching job ([design.md](design.md), section 7) on the same laptop, measured the same way: `make cw-bench` restarts the TaskManager, creates topics and a table of its own, submits the job, starts its writer, sends live events at the rate for 120 seconds and waits 30 seconds for the last changes. Throughput, lag and busy time come from Prometheus as above, read from the job's own source, `continue-watching-source`. **Update latency** comes from the writer: for each item it writes, the time from the event behind it being produced to the write finishing. There is no watermark to wait for, so it is mostly the wait for the checkpoint that commits the change, up to 10 seconds. The raw results are in [benchmarks/continue-watching/](benchmarks/continue-watching/).
+
+```bash
+make cw-bench CW_RATES="100 200 300 400"
+```
+
+| Parallelism | Rate (events/s) | Read/s | Lag at end | Lag trend | Items written | Update latency p50 / p95 / p99 (s) | Batch write p50 / p95 / p99 (ms) | Busiest task (busy ms/s) |
+|---:|---:|---:|---:|---|---:|---|---|---|
+| 1 | 100 | 100 | 327 | steady | 880 | 5.6 / 8.7 / 10.2 | 242 / 642 / 900 | track-progress (257) |
+| 1 | 200 | 200 | 0 | steady | 1,785 | 6.6 / 11.4 / 13.6 | 201 / 700 / 1,116 | track-progress (516) |
+| 1 | 300 | 303 | 0 | steady | 2,860 | 8.5 / 15.2 / 16.9 | 202 / 644 / 1,085 | track-progress (707) |
+| 1 | 400 | 400 | 1,342 | steady | 3,564 | 9.3 / 14.4 / 16.2 | 251 / 521 / 967 | track-progress (749) |
+| 1 | 500 | 548 | 0 | shrinking | 3,537 | 15.0 / 22.6 / 24.4 | 214 / 373 / 477 | track-progress (946) |
+| 1 | 600 | 590 | 4,770 | growing | 3,033 | 18.7 / 24.8 / 26.5 | 137 / 267 / 555 | track-progress (944) |
+
+- **Sustained 500 events/s at parallelism 1,** more than three times what trending sustains (150). At 500 it read 548 events/s, working off the lag built up early in the run. Lag grew at 600 events/s, where the job read 590. Update latency p95 stayed inside the 30-second target at every rate, 22.6 seconds at 500 events/s, though at 600 it would keep rising with the lag.
+- **The bottleneck is `track-progress`,** the keyed Python function: about 945 ms/s busy at 500 and 600 events/s, while the source, with validation chained to it, stayed under 200 ms/s and spent about 800 ms/s back-pressured, waiting on it. Trending's busiest task runs two Python operators for every event, deduplication and the row conversion for the SQL; this job runs one, which is why it goes further.
+- **The writer coalesces:** at 100 events/s it wrote about 900 items for roughly 10,000 changes in the measured stretch. Most events are heartbeats, and a batch keeps only the last change to each programme, so one write stands for about ten.
+- **Batch writes are slow but rare:** a few hundred milliseconds each against DynamoDB Local in the crowded Docker VM, once a checkpoint, which is small next to the checkpoint wait.
+
 ## Caveats
 
 - **One run per rate.** Run-to-run differences are 10 to 20%. An earlier run of this benchmark on the same laptop kept up at 300 events/s with parallelism 2 (294 events/s read), where this one fell behind (243), so the breaking point at parallelism 2 is somewhere between 200 and 300 events/s. The overloaded runs at parallelism 2 read anywhere between 232 and 302 events/s, so smaller differences mean nothing.

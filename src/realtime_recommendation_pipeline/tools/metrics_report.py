@@ -34,12 +34,14 @@ Query = Callable[[str, float], float | None]
 # The same for a query with one series per value of a label: label -> value.
 QueryByLabel = Callable[[str, float], dict[str, float]]
 
-# The job's Kafka source, viewing-events-source in jobs/validate_events.py;
-# Flink's reporter turns the hyphens into underscores.
+# A job's Kafka source, by operator name: viewing-events-source in
+# jobs/validate_events.py, continue-watching-source in jobs/continue_watching.py.
+# Both jobs read the events topic, so every query picks one of them.
 OPERATOR = "flink_taskmanager_job_task_operator"
-SOURCE = 'operator_name="Source:_viewing_events_source"'
-RECORDS_READ = f"{OPERATOR}_numRecordsOut{{{SOURCE}}}"
-WATERMARK_LAG_MS = f"{OPERATOR}_watermarkLag{{{SOURCE}}}"
+TRENDING_SOURCE = "viewing-events-source"
+CONTINUE_WATCHING_SOURCE = "continue-watching-source"
+RECORDS_READ = f"{OPERATOR}_numRecordsOut"
+WATERMARK_LAG_MS = f"{OPERATOR}_watermarkLag"
 # From kafka-exporter: each partition's end offset.
 END_OFFSETS = "kafka_topic_partition_current_offset"
 # From the job's Kafka source: the offset of the last record it read in each
@@ -166,16 +168,25 @@ def flink_label(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9:_]", "_", value)
 
 
-def read_lag(topic: str) -> str:
+def source_label(source: str) -> str:
+    """The label that picks one job's Kafka source; Flink's reporter writes
+    Source: before the name and turns its hyphens into underscores."""
+    return f'operator_name="Source:_{flink_label(source)}"'
+
+
+def read_lag(topic: str, source: str = TRENDING_SOURCE) -> str:
     """Records on the topic the job has not read yet, summed over partitions:
     each end offset minus the next offset to read (currentOffset + 1)."""
-    read = f'{READ_OFFSETS}{{topic="{flink_label(topic)}"}}'
+    read = f'{READ_OFFSETS}{{topic="{flink_label(topic)}",{source_label(source)}}}'
     return f'sum({END_OFFSETS}{{topic="{topic}"}}) - sum({read}) - count({read})'
 
 
-def read_ingest(query: Query, topic: str, start: float, end: float) -> Ingest:
+def read_ingest(
+    query: Query, topic: str, start: float, end: float, source: str = TRENDING_SOURCE
+) -> Ingest:
     span = lookback(end - start)
-    lag = read_lag(topic)
+    lag = read_lag(topic, source)
+    selector = source_label(source)
     # Kafka and Flink are scraped a moment apart, so a small lag can read
     # below 0; the trend uses the raw values.
     shown_lag = f"clamp_min({lag}, 0)"
@@ -186,12 +197,13 @@ def read_ingest(query: Query, topic: str, start: float, end: float) -> Ingest:
             end - start,
         ),
         events_per_s=per_second(
-            query(f"sum(increase({RECORDS_READ}[{span}]))", end), end - start
+            query(f"sum(increase({RECORDS_READ}{{{selector}}}[{span}]))", end),
+            end - start,
         ),
         lag_end=query(shown_lag, end),
         lag_max=query(f"max_over_time(({shown_lag})[{span}:5s])", end),
         lag_slope_per_s=query(f"deriv(({lag})[{span}:5s])", end),
-        watermark_delay_s=query(f"max({WATERMARK_LAG_MS}) / 1000", end),
+        watermark_delay_s=query(f"max({WATERMARK_LAG_MS}{{{selector}}}) / 1000", end),
     )
 
 

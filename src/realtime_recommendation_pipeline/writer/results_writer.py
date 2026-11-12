@@ -95,11 +95,18 @@ def writer_consumer_config(
 
 
 class KafkaDeadLetters:
-    """Sends windows that could not be written to the writer DLQ topic."""
+    """Sends what a writer could not write to its DLQ topic.
 
-    def __init__(self, producer: Any, topic: str) -> None:
+    Each record is keyed by its key_field (a window's window_end), or sent
+    without a key when key_field is None.
+    """
+
+    def __init__(
+        self, producer: Any, topic: str, key_field: str | None = "window_end"
+    ) -> None:
         self.producer = producer
         self.topic = topic
+        self.key_field = key_field
 
     def send(self, record: dict[str, Any]) -> None:
         """Send one record and wait for it; raises if Kafka did not take it."""
@@ -109,9 +116,10 @@ class KafkaDeadLetters:
             if error is not None:
                 errors.append(error)
 
+        key = None if self.key_field is None else str(record[self.key_field]).encode()
         self.producer.produce(
             self.topic,
-            key=record["window_end"].encode(),
+            key=key,
             value=json.dumps(record).encode(),
             on_delivery=on_delivery,
         )

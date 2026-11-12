@@ -11,6 +11,10 @@ outcome the design promises:
   with one complete item per window and no duplicates.
 - dynamodb: stop DynamoDB Local for 30 s. The writer backs off, commits
   nothing while it waits, then catches up.
+- continue-watching: run the continue-watching job and its writer, and
+SIGKILL the TaskManager and then the writer mid-stream. The table ends
+with exactly the programmes the oracle has in progress.
+
 
 The drills have their own topics and partition key, but they kill, restart
 and stop the shared containers, so anything else on the stack is disrupted
@@ -28,7 +32,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,12 +41,23 @@ from typing import Any
 from botocore.exceptions import BotoCoreError, ClientError
 from confluent_kafka import Consumer, KafkaException, Producer, TopicPartition
 
+from realtime_recommendation_pipeline.common.continue_watching_table import (
+    USER_KEY_PREFIX,
+    from_millis,
+)
 from realtime_recommendation_pipeline.common.kafka import downstream_consumer_config
 from realtime_recommendation_pipeline.common.trending_table import (
     TIME_FORMAT,
     create_table_if_missing,
     dynamodb_resource,
     load_table_definition,
+    millis_text,
+    plain,
+    recreate_table,
+)
+from realtime_recommendation_pipeline.continue_watching_oracle import (
+    InProgress,
+    continue_watching_oracle,
 )
 from realtime_recommendation_pipeline.flink_jobs.event_time import (
     MAX_OUT_OF_ORDERNESS_S,
@@ -50,7 +65,11 @@ from realtime_recommendation_pipeline.flink_jobs.event_time import (
 from realtime_recommendation_pipeline.flink_jobs.trending import TrendingConfig
 from realtime_recommendation_pipeline.producer.generate import generate_events
 from realtime_recommendation_pipeline.producer.kafka_producer import produce_events
-from realtime_recommendation_pipeline.settings import environment
+from realtime_recommendation_pipeline.settings import (
+    ContinueWatchingSettings,
+    environment,
+    load,
+)
 from realtime_recommendation_pipeline.tools.check_trending import read_rows
 from realtime_recommendation_pipeline.tools.check_writer import (
     compare,
@@ -82,6 +101,14 @@ WRITER_DLQ_TOPIC = "trending-writer-dlq-chaos"
 JOB_TOPICS = {EVENTS_TOPIC: 6, TRENDING_TOPIC: 1, EVENTS_DLQ_TOPIC: 6}
 WRITER_TOPICS = {TRENDING_TOPIC: 1, WRITER_DLQ_TOPIC: 1}
 PARTITION_KEY = "CHAOS#1h"
+# The continue-watching drill: the second job and its writer, with topics and a
+# table of their own.
+CW_EVENTS_TOPIC = "viewing-events-cw-chaos"
+CW_TOPIC = "continue-watching-chaos"
+CW_DLQ_TOPIC = "continue-watching-writer-dlq-chaos"
+CW_TOPICS = {CW_EVENTS_TOPIC: 6, CW_TOPIC: 1, CW_DLQ_TOPIC: 1}
+CW_TABLE = "continue-watching-chaos"
+CW_JOB_ARGS = ["--source-topic", CW_EVENTS_TOPIC, "--continue-watching-topic", CW_TOPIC]
 
 # The production job (1-hour windows every 5 minutes) on the chaos topics.
 JOB_ARGS = [
@@ -218,6 +245,62 @@ def synthetic_windows(
     return windows
 
 
+# A listed programme, by (user_id, programme_id): position, duration, last watched.
+Listing = dict[tuple[str, str], tuple[Any, ...]]
+
+
+def listed_programmes(items: Iterable[Mapping[str, Any]]) -> Listing:
+    """The continue-watching items in a table, as the oracle describes them."""
+    return {
+        (item["pk"].removeprefix(USER_KEY_PREFIX), item["sk"]): (
+            item["position_s"],
+            item["duration_s"],
+            item["last_watched_at"],
+        )
+        for item in items
+    }
+
+
+def oracle_programmes(expected: Iterable[InProgress]) -> Listing:
+    return {
+        (row.user_id, row.programme_id): (
+            row.position_s,
+            row.duration_s,
+            millis_text(from_millis(row.event_time)),
+        )
+        for row in expected
+    }
+
+
+def compare_listings(actual: Listing, expected: Listing) -> list[str]:
+    """Differences between the table's programmes and the oracle's."""
+
+    def name(key: tuple[str, str]) -> str:
+        return f"{key[0]} {key[1]}"
+
+    problems = []
+    missing = sorted(expected.keys() - actual.keys())
+    if missing:
+        problems.append(
+            f"{len(missing)} in-progress programmes are missing, e.g. {name(missing[0])}"
+        )
+    extra = sorted(actual.keys() - expected.keys())
+    if extra:
+        problems.append(
+            f"{len(extra)} programmes are listed but should not be, e.g. {name(extra[0])}"
+        )
+    wrong = sorted(
+        key for key in actual.keys() & expected.keys() if actual[key] != expected[key]
+    )
+    if wrong:
+        key = wrong[0]
+        problems.append(
+            f"{len(wrong)} programmes have the wrong position, e.g. {name(key)}: "
+            f"{actual[key]} instead of {expected[key]}"
+        )
+    return problems
+
+
 def first_few(problems: Sequence[str], keep: int = 3) -> list[str]:
     """The first problems, and how many more there were."""
     if len(problems) <= keep:
@@ -321,9 +404,10 @@ def read_committed(bootstrap_servers: str, topic: str) -> list[dict[str, Any]]:
 class EventProducer(threading.Thread):
     """The generated events for the job drills, at a steady rate."""
 
-    def __init__(self, bootstrap_servers: str) -> None:
+    def __init__(self, bootstrap_servers: str, topic: str = EVENTS_TOPIC) -> None:
         super().__init__(name="chaos-producer", daemon=True)
         self.bootstrap_servers = bootstrap_servers
+        self.topic = topic
         self.stats: dict[str, int] | None = None
 
     def run(self) -> None:
@@ -333,7 +417,7 @@ class EventProducer(threading.Thread):
             duration=DURATION_S,
             seed=SEED,
             dup_rate=DUP_RATE,
-            topic=EVENTS_TOPIC,
+            topic=self.topic,
         )
 
 
@@ -369,6 +453,9 @@ class WindowPublisher(threading.Thread):
 
 class WriterProcess:
     """The results writer as a child process, so a drill can really kill it."""
+
+    # The log line for each write it counts.
+    written_message = "wrote window"
 
     def __init__(self, settings: DemoSettings, group_id: str) -> None:
         self.command = [
@@ -418,7 +505,7 @@ class WriterProcess:
                 message = json.loads(line).get("message", "")
             except ValueError:
                 continue
-            if message == "wrote window":
+            if message == self.written_message:
                 self.written += 1
             elif message.startswith("dynamodb unreachable"):
                 self.unreachable += 1
@@ -433,6 +520,31 @@ class WriterProcess:
         if self.process is not None and self.process.poll() is None:
             self.process.terminate()
             self.process.wait(timeout=30)
+
+
+class ContinueWatchingWriterProcess(WriterProcess):
+    """The continue-watching writer as a child process, on the drill's topic
+    and table. Its writes are batches."""
+
+    written_message = "wrote changes"
+
+    def __init__(self, settings: DemoSettings, group_id: str) -> None:
+        super().__init__(settings, group_id)
+        self.command = [
+            sys.executable,
+            "-m",
+            "realtime_recommendation_pipeline.writer.continue_watching_writer",
+        ]
+        continue_watching = load(ContinueWatchingSettings).model_copy(
+            update={
+                "topic": CW_TOPIC,
+                "writer_dlq_topic": CW_DLQ_TOPIC,
+                "writer_group_id": group_id,
+                "writer_instance_id": group_id,
+            }
+        )
+        dynamo = settings.dynamo.model_copy(update={"table": CW_TABLE})
+        self.env = {**self.env, **environment(continue_watching), **environment(dynamo)}
 
 
 # --- The drills ----------------------------------------------------------------
@@ -520,39 +632,43 @@ def run_job_drill(
     return report
 
 
+def kill_taskmanager(settings: DemoSettings, say: Say, job_id: str) -> DrillReport:
+    """SIGKILL the TaskManager, start it 10 s later and wait for the job to restore."""
+    report = DrillReport()
+    before = checkpoint_counts(settings.flink_url, job_id)
+    try:
+        say("Killing the TaskManager with SIGKILL")
+        killed_at = time.monotonic()
+        compose("kill", "-s", "SIGKILL", "flink-taskmanager")
+        # Docker does not restart a container stopped by `docker kill`, so
+        # bring it back the way an orchestrator would.
+        time.sleep(10)
+    finally:
+        compose("start", "flink-taskmanager")
+
+    wait_until(
+        "The job did not restore from a checkpoint",
+        lambda: checkpoint_counts(settings.flink_url, job_id)["restored"] >= 1,
+        timeout_s=300,
+    )
+    wait_until(
+        "The job did not run again",
+        lambda: job_is_running(settings.flink_url, job_id),
+        timeout_s=300,
+    )
+    after = checkpoint_counts(settings.flink_url, job_id)
+    report.observed.append(
+        f"TaskManager killed with {before['completed']} checkpoint(s) completed; "
+        f"running again {time.monotonic() - killed_at:.0f} s later, restored from "
+        f"checkpoint {after['restored_id']}"
+    )
+    return report
+
+
 def taskmanager_drill(settings: DemoSettings, say: Say) -> DrillReport:
-    def kill_taskmanager(job_id: str) -> DrillReport:
-        report = DrillReport()
-        before = checkpoint_counts(settings.flink_url, job_id)
-        try:
-            say("Killing the TaskManager with SIGKILL")
-            killed_at = time.monotonic()
-            compose("kill", "-s", "SIGKILL", "flink-taskmanager")
-            # Docker does not restart a container stopped by `docker kill`, so
-            # bring it back the way an orchestrator would.
-            time.sleep(10)
-        finally:
-            compose("start", "flink-taskmanager")
-
-        wait_until(
-            "The job did not restore from a checkpoint",
-            lambda: checkpoint_counts(settings.flink_url, job_id)["restored"] >= 1,
-            timeout_s=300,
-        )
-        wait_until(
-            "The job did not run again",
-            lambda: job_is_running(settings.flink_url, job_id),
-            timeout_s=300,
-        )
-        after = checkpoint_counts(settings.flink_url, job_id)
-        report.observed.append(
-            f"killed with {before['completed']} checkpoint(s) completed; running again "
-            f"{time.monotonic() - killed_at:.0f} s later, restored from checkpoint "
-            f"{after['restored_id']}"
-        )
-        return report
-
-    return run_job_drill(settings, say, kill_taskmanager)
+    return run_job_drill(
+        settings, say, lambda job_id: kill_taskmanager(settings, say, job_id)
+    )
 
 
 def kafka_drill(settings: DemoSettings, say: Say) -> DrillReport:
@@ -711,11 +827,111 @@ def dynamodb_drill(settings: DemoSettings, say: Say) -> DrillReport:
     return report
 
 
+def scan_all(table: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    arguments: dict[str, Any] = {}
+    while True:
+        response = table.scan(**arguments)
+        items += [plain(item) for item in response["Items"]]
+        if "LastEvaluatedKey" not in response:
+            return items
+        arguments["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+
+def continue_watching_drill(settings: DemoSettings, say: Say) -> DrillReport:
+    report = DrillReport()
+    recreate_topics(settings.bootstrap_servers, CW_TOPICS)
+    dynamodb = dynamodb_resource(settings.dynamodb_endpoint)
+    recreate_table(
+        dynamodb.meta.client, load_table_definition(TABLE_DEFINITION), CW_TABLE
+    )
+    table = dynamodb.Table(CW_TABLE)
+
+    writer = ContinueWatchingWriterProcess(settings, f"chaos-cw-writer-{uuid.uuid4()}")
+    job_id = submit_job(CW_JOB_ARGS, script="continue_watching.py")
+    try:
+        wait_until(
+            "The continue-watching job did not start running",
+            lambda: job_is_running(settings.flink_url, job_id),
+            timeout_s=180,
+        )
+        writer.start()
+        producer = EventProducer(settings.bootstrap_servers, CW_EVENTS_TOPIC)
+        producer.start()
+        say(
+            f"Job and writer running; producing {RATE * DURATION_S:.0f} events "
+            f"over {DURATION_S:.0f} s"
+        )
+
+        # Break things only once a checkpoint exists and changes are committed.
+        wait_until(
+            "No checkpoint completed with changes committed",
+            lambda: (
+                checkpoint_counts(settings.flink_url, job_id)["completed"] >= 1
+                and end_offset(settings.bootstrap_servers, CW_TOPIC) > 0
+            ),
+            timeout_s=180,
+        )
+        report.observed += kill_taskmanager(settings, say, job_id).observed
+
+        # Then kill the writer, once it has written again after the restore.
+        writes = writer.written
+        wait_until(
+            "The writer did not write after the TaskManager came back",
+            written_at_least(writer, writes + 3),
+            timeout_s=180,
+        )
+        writer.kill()
+        say(f"Killed the writer with SIGKILL after {writer.written} batches")
+        writer.start()
+        report.observed.append(
+            f"writer killed after {writer.written} batches and started again at once"
+        )
+
+        producer.join(timeout=DURATION_S + 300)
+        if producer.stats is None:
+            raise DemoError("The producer did not finish")
+
+        say("Waiting for the job to commit its last changes")
+        wait_until_quiet(settings.bootstrap_servers, CW_TOPIC)
+
+        events = generate_events(int(RATE * DURATION_S), seed=SEED, dup_rate=DUP_RATE)
+        expected = oracle_programmes(continue_watching_oracle(events))
+        # The writer may still be catching up, so give it two minutes.
+        deadline = time.monotonic() + 120
+        while True:
+            problems = compare_listings(listed_programmes(scan_all(table)), expected)
+            if not problems or time.monotonic() > deadline:
+                break
+            time.sleep(5)
+
+        report.problems += first_few(problems)
+        if not problems:
+            users = len({user_id for user_id, _ in expected})
+            watched = len({(e["user_id"], e["programme_id"]) for e in events})
+            report.observed.append(
+                f"{len(expected)} in-progress programmes for {users} users match the "
+                f"oracle; the {watched - len(expected)} finished ones are not listed"
+            )
+    finally:
+        writer.stop()
+        try:
+            stop_job(settings.flink, job_id)
+        except (OSError, DemoError) as exc:
+            say(f"Could not stop the continue-watching job {job_id}: {exc}")
+
+    return report
+
+
 DRILLS: dict[str, tuple[str, Callable[[DemoSettings, Say], DrillReport]]] = {
     "taskmanager": ("TaskManager killed mid-stream", taskmanager_drill),
     "kafka": ("Kafka broker restarted mid-stream", kafka_drill),
     "writer": ("Writer killed mid-batch", writer_drill),
     "dynamodb": ("DynamoDB unreachable", dynamodb_drill),
+    "continue-watching": (
+        "Continue watching: TaskManager and writer killed",
+        continue_watching_drill,
+    ),
 }
 
 

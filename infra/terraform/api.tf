@@ -10,10 +10,17 @@ resource "aws_apigatewayv2_integration" "api" {
   payload_format_version = "2.0"
 }
 
-# The only route: anything else gets API Gateway's own 404.
+# The two routes, both to the same Lambda, which tells them apart by routeKey.
+# Anything else gets API Gateway's own 404.
 resource "aws_apigatewayv2_route" "get_trending" {
   api_id    = aws_apigatewayv2_api.trending.id
   route_key = "GET /trending"
+  target    = "integrations/${aws_apigatewayv2_integration.api.id}"
+}
+
+resource "aws_apigatewayv2_route" "get_continue_watching" {
+  api_id    = aws_apigatewayv2_api.trending.id
+  route_key = "GET /users/{id}/continue-watching"
   target    = "integrations/${aws_apigatewayv2_integration.api.id}"
 }
 
@@ -37,4 +44,13 @@ resource "aws_lambda_permission" "api" {
   function_name = aws_lambda_function.api.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.trending.execution_arn}/*/GET/trending"
+}
+
+resource "aws_lambda_permission" "api_continue_watching" {
+  statement_id  = "AllowHttpApiGetContinueWatching"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.api.function_name
+  principal     = "apigateway.amazonaws.com"
+  # The * stands for the user id in the path.
+  source_arn = "${aws_apigatewayv2_api.trending.execution_arn}/*/GET/users/*/continue-watching"
 }

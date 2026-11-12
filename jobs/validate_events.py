@@ -10,13 +10,7 @@ from pyflink.datastream import (
     RuntimeContext,
     StreamExecutionEnvironment,
 )
-from pyflink.datastream.connectors.base import DeliveryGuarantee
-from pyflink.datastream.connectors.kafka import (
-    KafkaOffsetsInitializer,
-    KafkaRecordSerializationSchema,
-    KafkaSink,
-    KafkaSource,
-)
+from pyflink.datastream.connectors.kafka import KafkaOffsetsInitializer, KafkaSource
 from pyflink.table import StreamTableEnvironment
 
 from realtime_recommendation_pipeline.flink_jobs.dedup import deduplicate
@@ -25,8 +19,8 @@ from realtime_recommendation_pipeline.flink_jobs.event_time import (
     viewing_event_watermarks,
 )
 from realtime_recommendation_pipeline.flink_jobs.job_config import parse_job_config
+from realtime_recommendation_pipeline.flink_jobs.kafka_sink import build_kafka_sink
 from realtime_recommendation_pipeline.flink_jobs.reliability import (
-    TRANSACTION_TIMEOUT_MS,
     job_settings,
     to_flink_configuration,
 )
@@ -60,32 +54,6 @@ class ValidateEvents(ProcessFunction):
         self.dead_lettered_events.inc()
         # PyFlink has no ctx.output(); yield (tag, value) to emit a side output.
         yield DLQ_TAG, json.dumps(result.dead_letter)
-
-
-def build_kafka_sink(
-    bootstrap_servers: str, topic: str, *, exactly_once: bool = False
-) -> KafkaSink:
-    builder = (
-        KafkaSink.builder()
-        .set_bootstrap_servers(bootstrap_servers)
-        .set_record_serializer(
-            KafkaRecordSerializationSchema.builder()
-            .set_topic(topic)
-            .set_value_serialization_schema(SimpleStringSchema())
-            .build()
-        )
-    )
-
-    if not exactly_once:
-        return builder.set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE).build()
-
-    # Rows go out in a Kafka transaction that commits when the checkpoint completes. The prefix must be unique per sink and stay the same across restarts, so Flink can find and finish or abort its old transactions.
-    return (
-        builder.set_delivery_guarantee(DeliveryGuarantee.EXACTLY_ONCE)
-        .set_transactional_id_prefix(f"recommendation-pipeline-{topic}")
-        .set_property("transaction.timeout.ms", str(TRANSACTION_TIMEOUT_MS))
-        .build()
-    )
 
 
 def main() -> None:

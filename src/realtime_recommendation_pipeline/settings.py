@@ -74,6 +74,21 @@ class DynamoDBSettings(BaseSettings):
         return None if value == "" else value
 
 
+class ContinueWatchingSettings(BaseSettings):
+    """The continue-watching job's output topic, its source group and its writer.
+
+    Its items go in the DYNAMODB_TABLE table, next to the trending lists.
+    """
+
+    model_config = settings_config("CONTINUE_WATCHING_")
+
+    topic: str
+    writer_dlq_topic: str
+    source_group_id: str
+    writer_group_id: str
+    writer_instance_id: str
+
+
 class MetricsSettings(BaseSettings):
     """Prometheus, and the address the results writer serves its metrics on."""
 

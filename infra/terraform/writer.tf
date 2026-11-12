@@ -16,18 +16,34 @@ resource "aws_iam_role" "writer" {
   })
 }
 
-# Write only: the writer's one call is PutItem (put_window).
+# Write only. The results writer's one call is PutItem (put_window). The
+# continue-watching writer puts and deletes items with BatchWriteItem, and only
+# in USER# partitions, so it cannot touch the trending lists.
 resource "aws_iam_role_policy" "writer" {
   name = "write-trending-table"
   role = aws_iam_role.writer.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid      = "WriteTrendingWindows"
-      Effect   = "Allow"
-      Action   = "dynamodb:PutItem"
-      Resource = aws_dynamodb_table.trending.arn
-    }]
+    Statement = [
+      {
+        Sid      = "WriteTrendingWindows"
+        Effect   = "Allow"
+        Action   = "dynamodb:PutItem"
+        Resource = aws_dynamodb_table.trending.arn
+      },
+      {
+        Sid      = "WriteContinueWatching"
+        Effect   = "Allow"
+        Action   = "dynamodb:BatchWriteItem"
+        Resource = aws_dynamodb_table.trending.arn
+        # LeadingKeys holds every item's partition key. ForAllValues also
+        # passes when there are none, so Null makes sure there are.
+        Condition = {
+          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["USER#*"] }
+          Null                      = { "dynamodb:LeadingKeys" = "false" }
+        }
+      },
+    ]
   })
 }

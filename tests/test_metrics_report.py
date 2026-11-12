@@ -68,10 +68,12 @@ def test_lag_is_end_offsets_minus_where_the_job_has_read_to() -> None:
     read_ingest(query, TOPIC, START, END)
 
     # Flink's reporter writes the topic with underscores; currentOffset is
-    # the last offset read, so the next one is currentOffset + 1.
+    # the last offset read, so the next one is currentOffset + 1. Both jobs
+    # read the events topic, so the trending job's source is picked by name.
     read = (
         "flink_taskmanager_job_task_operator_KafkaSourceReader_topic_partition"
-        '_currentOffset{topic="viewing_events_demo"}'
+        '_currentOffset{topic="viewing_events_demo",'
+        'operator_name="Source:_viewing_events_source"}'
     )
     lag = (
         'sum(kafka_topic_partition_current_offset{topic="viewing-events-demo"})'

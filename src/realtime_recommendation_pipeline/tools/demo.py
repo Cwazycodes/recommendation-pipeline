@@ -222,12 +222,14 @@ def recreate_topics(bootstrap_servers: str, topics: Mapping[str, int] = TOPICS) 
             time.sleep(1)
 
 
-def submit_job(job_args: Sequence[str] = DEMO_JOB_ARGS) -> str:
-    """Submit the streaming job with these arguments; return its id."""
+def submit_job(
+    job_args: Sequence[str] = DEMO_JOB_ARGS, script: str = "validate_events.py"
+) -> str:
+    """Submit a streaming job from jobs/ with these arguments; return its id."""
     command = [
         "docker", "compose", "exec", "-T", "flink-jobmanager",
         "flink", "run", "-d",
-        "-py", "/opt/flink/jobs/validate_events.py",
+        "-py", f"/opt/flink/jobs/{script}",
         "-pyfs", "/opt/flink/src",
         *job_args,
     ]  # fmt: skip
